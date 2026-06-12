@@ -1,0 +1,42 @@
+{
+  "trainer_config_path": "/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/conf/xgboost_trainer_config.json",
+  "prediction_path": "/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/outputs/xgb_cross_sectional_dataset/pred_test.parquet",
+  "label_path": "/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/data/generated_label/daily_labels",
+  "output_dir": "/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/outputs/preparatory_backtest/0610_4",
+  "start_time": "2023-01-01",
+  "end_time": "2025-12-31",
+  "account": 1000000.0,
+  "benchmark": "market_mean",
+  "freq": "day",
+  "strategy": {
+    "class": "TopkDropoutStrategy",
+    "topk": 10,
+    "n_drop": 3,
+    "method_sell": "bottom",
+    "method_buy": "top",
+    "hold_thresh": 1,
+    "only_tradable": false,
+    "forbid_all_trade_at_limit": true
+  },
+  "executor": {
+    "time_per_step": "day",
+    "generate_portfolio_metrics": true,
+    "verbose": false
+  },
+  "exchange_kwargs": {
+    "freq": "day",
+    "deal_price": "close",
+    "open_cost": 0.0005,
+    "close_cost": 0.0015,
+    "min_cost": 5.0,
+    "impact_cost": 0.0050,
+    "limit_threshold": 0.095
+  },
+  "columns": {
+    "score": "pred",
+    "label": "label_5d",
+    "return_label": "label_1d",
+    "return": "return_1d"
+  },
+  "save_positions": true
+}

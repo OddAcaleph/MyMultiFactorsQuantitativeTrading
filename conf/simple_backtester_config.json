@@ -1,0 +1,40 @@
+{
+  "trainer_config_path": "/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/conf/xgboost_trainer_config.json",
+  "prediction_path": "/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/outputs/xgb_cross_sectional_dataset/pred_test.parquet",
+  "price_path": "/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/data/processd_data/wide_table_daily_bars",
+  "benchmark_path": "/opt/tiger/qyd/qlib_data_cn/features",
+  "output_dir": "/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/outputs/simple_backtest/0611_2",
+  "start_time": "2023-01-01",
+  "end_time": "2025-12-31",
+  "account": 1000000.0,
+  "benchmark": "000300.SH",
+  "benchmark_lookback_days": 31,
+  "freq": "5d",
+  "signal_delay": 1,
+  "price_adjustment": "qfq",
+  "strategy": {
+    "class": "TopkDropoutStrategy",
+    "topk": 50,
+    "n_drop": 2,
+    "method_sell": "bottom",
+    "method_buy": "top",
+    "forbid_all_trade_at_limit": false
+  },
+  "exchange_kwargs": {
+    "freq": "day",
+    "deal_price": "open",
+    "open_cost": 0.0005,
+    "close_cost": 0.0015,
+    "min_cost": 5.0,
+    "slippage": 0.0010,
+    "limit_threshold": 0.095,
+    "lot_size": 100,
+    "forbid_buy_limit_up": true,
+    "forbid_buy_limit_down": true,
+    "forbid_sell_limit_down": true
+  },
+  "columns": {
+    "score": "pred"
+  },
+  "save_positions": true
+}

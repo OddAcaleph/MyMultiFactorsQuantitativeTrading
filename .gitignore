@@ -1,0 +1,79 @@
+# ====================
+# 操作系统生成的文件
+# ====================
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Icon?
+.AppleDouble
+.LSOverride
+
+# ====================
+# 虚拟环境和包管理
+# ====================
+.venv/
+env/
+venv/
+pipenv/
+__pypackages__/
+node_modules/
+dist/
+build/
+*.egg-info/
+
+# ====================
+# 编译和缓存文件
+# ====================
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.so
+*.dylib
+*.exe
+
+# ====================
+# 日志和临时文件
+# ====================
+*.log
+*.bak
+*.swp
+*.swo
+*.tmp
+*.temp
+**/*log*/
+
+# ====================
+# 配置文件
+# ====================
+config.ini
+secrets.json
+.env
+.idea/
+.vscode/
+settings.xml
+*.iml
+
+# ====================
+# 数据库文件
+# ====================
+*.db
+*.sqlite
+
+# ====================
+# 测试报告和覆盖率
+# ====================
+htmlcov/
+.coverage
+.coverage.*
+nosetests.xml
+coverage.xml
+output.json
+./result_log/*
+
+# ====================
+# 自定义规则（根据项目调整）
+# ====================
+# 示例：忽略特定目录或文件
+data/
+outputs/

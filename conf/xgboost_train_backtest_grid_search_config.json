@@ -1,0 +1,22 @@
+{
+  "model_root": "${PROJECT_ROOT}/models/xgboost_grid_search",
+  "log_path": "${PROJECT_ROOT}/log/search_best_params/xgb_train",
+  "backtest_output_root": "${PROJECT_ROOT}/outputs/grid_search/xgboost_grid_search",
+  "verbose": "50",
+  "label_name_grid": "label_1d,label_2d,label_3d,label_5d,label_10d,label_20d,label_rank_1d,label_rank_2d,label_rank_3d,label_rank_5d,label_rank_10d,label_rank_20d",
+  "n_estimators_grid": "100,200,300,400,500",
+  "max_depth_grid": "4,8,12,16",
+  "learning_rate_grid": "0.01,0.03,0.05",
+  "subsample_grid": null,
+  "colsample_bytree_grid": null,
+  "min_child_weight_grid": null,
+  "gamma_grid": null,
+  "reg_alpha_grid": null,
+  "reg_lambda_grid": null,
+  "freq_grid": "1d,2d,3d,5d,7d,10d,20d",
+  "topk_grid": "5,10,20,30,50",
+  "n_drop_grid": "1,2,3,5",
+  "account_grid": "1000000",
+  "jobs": 4,
+  "resume": true
+}

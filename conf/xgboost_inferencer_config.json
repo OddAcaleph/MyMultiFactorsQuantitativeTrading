@@ -1,0 +1,17 @@
+{
+  "trainer_config_path": "/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/conf/xgboost_trainer_config.json",
+  "loader_config_path": "/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/conf/parquet_loader_config.json",
+  "model_path": "/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/models/xgboost_label_5d.json",
+  "output_dir": "/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/outputs/xgb_cross_sectional_dataset",
+  "segment": "test",
+  "start_time": null,
+  "end_time": null,
+  "instruments": "all",
+  "prefer_gpu": true,
+  "prediction_filename": "pred_test.parquet",
+  "columns": {
+    "prediction": "pred",
+    "label": "label_5d"
+  },
+  "include_label": true
+}

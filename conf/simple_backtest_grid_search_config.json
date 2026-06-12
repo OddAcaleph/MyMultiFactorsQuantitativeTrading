@@ -1,0 +1,8 @@
+{
+  "output_root": "${PROJECT_ROOT}/outputs/simple_backtest",
+  "freq_grid": "1d,2d,3d,5d,7d,10d,20d",
+  "topk_grid": "5,10,20,30,50",
+  "n_drop_grid": "1,2,3,5",
+  "account_grid": "1000000",
+  "jobs": 4
+}

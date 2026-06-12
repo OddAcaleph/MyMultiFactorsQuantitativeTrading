@@ -1,0 +1,27 @@
+{
+  "loader_config_path": "/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/conf/parquet_loader_config.json",
+  "instruments": "all",
+  "start_time": "2000-01-01",
+  "end_time": "2025-12-31",
+  "output_dir": "/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/outputs/xgb_cross_sectional_dataset",
+  "model_dir": "/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/models",
+  "model_filename": "xgboost_label_5d.json",
+  "label_name": "label_5d",
+  "prefer_gpu": true,
+  "segments": {
+    "train": ["2000-01-01", "2020-12-31"],
+    "valid": ["2021-01-01", "2022-12-31"],
+    "test": ["2023-01-01", "2025-12-31"]
+  },
+  "model_params": {
+    "n_estimators": 300,
+    "max_depth": 4,
+    "learning_rate": 0.03,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "objective": "reg:squarederror",
+    "tree_method": "hist",
+    "random_state": 42,
+    "n_jobs": 8
+  }
+}
