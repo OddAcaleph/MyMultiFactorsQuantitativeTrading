@@ -140,6 +140,11 @@ class SimpleBacktester:
     ) -> dict[str, Any]:
         """Run the backtest and optionally save artifacts."""
 
+        topk = int(self.strategy_config.get("topk", 50))
+        n_drop = int(self.strategy_config.get("n_drop", 5))
+        if n_drop > topk:
+            return self._skipped_result(topk=topk, n_drop=n_drop)
+
         pred_df = self.load_predictions() if pred_df is None else pred_df
         price_df = self.load_prices() if price_df is None else price_df
         benchmark_returns = self.load_benchmark_returns() if benchmark_returns is None else benchmark_returns
@@ -150,6 +155,25 @@ class SimpleBacktester:
             self.save_outputs(report_df=report_df, positions_df=positions_df, trades_df=trades_df, analysis=analysis)
 
         return {"report": report_df, "positions": positions_df, "trades": trades_df, "analysis": analysis}
+
+    def _skipped_result(self, topk: int, n_drop: int) -> dict[str, Any]:
+        """Return an empty result when the strategy parameters should be skipped."""
+
+        skip_reason = f"strategy.n_drop ({n_drop}) is greater than strategy.topk ({topk}); skip this backtest"
+        return {
+            "report": pd.DataFrame(),
+            "positions": pd.DataFrame(),
+            "trades": pd.DataFrame(),
+            "analysis": {
+                "summary": {
+                    "skipped": True,
+                    "skip_reason": skip_reason,
+                    "topk": int(topk),
+                    "n_drop": int(n_drop),
+                },
+                "config": self.config,
+            },
+        }
 
     def load_predictions(self) -> pd.DataFrame:
         """Load OOS prediction scores with MultiIndex(datetime, instrument)."""

@@ -29,6 +29,8 @@ from .ic_validator import (
     LongShortBacktestAnalyzer,
     ScoreDistributionAnalyzer,
     TurnoverAnalyzer,
+    XGBICMetricsResult,
+    XGBModelICCalculator,
 )
 from .dataset_generator import ParquetLoader
 
@@ -51,6 +53,8 @@ __all__ = [
     "ParquetLoader",
     "ScoreDistributionAnalyzer",
     "TurnoverAnalyzer",
+    "XGBICMetricsResult",
+    "XGBModelICCalculator",
     "deep_merge",
     "load_backtester_config",
     "load_config",

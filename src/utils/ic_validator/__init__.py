@@ -7,6 +7,7 @@ from .long_short_backtest import LongShortBacktestAnalyzer
 from .score_distribution import ScoreDistributionAnalyzer
 from .turnover import TurnoverAnalyzer
 from .validator import ICValidator
+from .xgb_ic_metrics import XGBICMetricsResult, XGBModelICCalculator
 
 __all__ = [
     "BaseICValidationStep",
@@ -17,4 +18,6 @@ __all__ = [
     "ScoreDistributionAnalyzer",
     "TurnoverAnalyzer",
     "ValidationResult",
+    "XGBICMetricsResult",
+    "XGBModelICCalculator",
 ]
