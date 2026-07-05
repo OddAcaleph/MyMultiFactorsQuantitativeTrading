@@ -2,8 +2,8 @@
 
 The cleaned ``industry.parquet`` file is treated as read-only. This processor
 checks uniqueness and missing values for the industry classification fields,
-then writes a wide table with one-hot columns for ``industry``, ``L1``, ``L2``
-and ``L3`` categories.
+then writes a wide table with ``in_date``/``out_date`` validity columns and
+one-hot columns for ``industry``, ``L1``, ``L2`` and ``L3`` categories.
 """
 
 from __future__ import annotations
@@ -53,10 +53,12 @@ class IndustryOneHotProcessor:
     Output columns:
 
     - ``ts_code``: stock code.
+    - ``in_date``: industry classification effective date.
+    - ``out_date``: industry classification invalid date; empty if still active.
     - ``industry_<category>``: one-hot columns from the cleaned ``industry`` field.
-    - ``L1_<category>``: one-hot columns from ``L1_industry_name``.
-    - ``L2_<category>``: one-hot columns from ``L2_industry_name``.
-    - ``L3_<category>``: one-hot columns from ``L3_industry_name``.
+    - ``L1_<category>``: one-hot columns from ``l1_name``.
+    - ``L2_<category>``: one-hot columns from ``l2_name``.
+    - ``L3_<category>``: one-hot columns from ``l3_name``.
 
     Missing category values are not imputed and do not create a dummy category;
     their corresponding level's one-hot columns are all zero. The input parquet
@@ -74,11 +76,13 @@ class IndustryOneHotProcessor:
     KEY_COLUMN = "ts_code"
     CATEGORY_COLUMNS: Mapping[str, str] = {
         "industry": "industry",
-        "L1": "L1_industry_name",
-        "L2": "L2_industry_name",
-        "L3": "L3_industry_name",
+        "L1": "l1_name",
+        "L2": "l2_name",
+        "L3": "l3_name",
     }
-    REQUIRED_COLUMNS: tuple[str, ...] = (KEY_COLUMN, *CATEGORY_COLUMNS.values())
+    VALIDITY_COLUMNS: tuple[str, str] = ("in_date", "out_date")
+    REQUIRED_COLUMNS: tuple[str, ...] = (KEY_COLUMN, *CATEGORY_COLUMNS.values(), *VALIDITY_COLUMNS)
+    MISSING_CHECK_COLUMNS: tuple[str, ...] = (KEY_COLUMN, *CATEGORY_COLUMNS.values())
 
     def __init__(
         self,
@@ -107,7 +111,7 @@ class IndustryOneHotProcessor:
         rows_read = len(raw_df)
         raw_duplicate_ts_code_rows = int(raw_df.duplicated(subset=[self.KEY_COLUMN], keep=False).sum())
         raw_conflict_ts_code_rows = self._count_conflict_ts_code_rows(raw_df)
-        raw_missing_by_column = {column: int(self._is_null_or_empty(raw_df[column]).sum()) for column in self.REQUIRED_COLUMNS}
+        raw_missing_by_column = {column: int(self._is_null_or_empty(raw_df[column]).sum()) for column in self.MISSING_CHECK_COLUMNS}
         raw_missing_rows = int(self._required_missing_mask(raw_df).sum())
 
         prepared_df = self._prepare_raw_dataframe(raw_df)
@@ -148,6 +152,9 @@ class IndustryOneHotProcessor:
         for column in self.CATEGORY_COLUMNS.values():
             prepared[column] = prepared[column].astype("string").str.strip()
             prepared.loc[prepared[column].eq(""), column] = pd.NA
+        for column in self.VALIDITY_COLUMNS:
+            prepared[column] = prepared[column].astype("string").str.strip().fillna("")
+            prepared.loc[prepared[column].isin(["<NA>", "nan", "NaT", "None"]), column] = ""
 
         missing_ts_code_rows = int(self._is_null_or_empty(prepared[self.KEY_COLUMN]).sum())
         if missing_ts_code_rows:
@@ -164,7 +171,13 @@ class IndustryOneHotProcessor:
         return prepared.sort_values(self.KEY_COLUMN, kind="mergesort").reset_index(drop=True)
 
     def _build_one_hot_features(self, prepared_df: pd.DataFrame) -> pd.DataFrame:
-        output = pd.DataFrame({self.KEY_COLUMN: prepared_df[self.KEY_COLUMN].astype("string")})
+        output = pd.DataFrame(
+            {
+                self.KEY_COLUMN: prepared_df[self.KEY_COLUMN].astype("string"),
+                "in_date": prepared_df["in_date"].astype("string"),
+                "out_date": prepared_df["out_date"].astype("string"),
+            }
+        )
 
         for prefix, source_column in self.CATEGORY_COLUMNS.items():
             dummy_df = pd.get_dummies(prepared_df[source_column], prefix=prefix, prefix_sep="_", dummy_na=False, dtype="int8")
@@ -192,7 +205,7 @@ class IndustryOneHotProcessor:
 
     def _required_missing_mask(self, df: pd.DataFrame) -> pd.Series:
         missing_mask = pd.Series(False, index=df.index)
-        for column in self.REQUIRED_COLUMNS:
+        for column in self.MISSING_CHECK_COLUMNS:
             missing_mask = missing_mask | self._is_null_or_empty(df[column])
         return missing_mask
 

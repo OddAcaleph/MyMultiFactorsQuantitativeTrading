@@ -46,7 +46,7 @@ class IndustryFeatureGenerator:
 
     Generated factor columns:
 
-    - L1 industry one-hot columns: ``L1_xxx`` from ``L1_industry_name`` only.
+    - L1 industry one-hot columns: ``L1_xxx`` from ``l1_name`` only.
     - Industry returns: ``industry_ret_1``, ``industry_ret_5`` and
       ``industry_ret_20`` as same-day L1 industry cross-sectional means.
     - Relative strength: ``relative_strength_5 = ret_5 - industry_ret_5`` and
@@ -75,10 +75,10 @@ class IndustryFeatureGenerator:
 
     KEY_COLUMNS: tuple[str, str] = ("trade_date", "ts_code")
     INDUSTRY_KEY_COLUMN = "ts_code"
-    INDUSTRY_LEVEL_COLUMN = "L1_industry_name"
+    INDUSTRY_LEVEL_COLUMN = "l1_name"
     PRICE_RETURN_COLUMNS: tuple[str, ...] = ("ret_5", "ret_20")
     PRICE_DAILY_RETURN_CANDIDATES: tuple[str, str] = ("ret_1", "pct_chg")
-    FUNDAMENTAL_COLUMNS: tuple[str, ...] = ("roe", "roa", "revenue_yoy")
+    FUNDAMENTAL_COLUMNS: tuple[str, ...] = ("roe", "roa", "or_yoy")
     DERIVED_FACTOR_COLUMNS: tuple[str, ...] = (
         "industry_ret_1",
         "industry_ret_5",
@@ -309,7 +309,7 @@ class IndustryFeatureGenerator:
         for source_column, neutral_column in (
             ("roe", "roe_ind_neutral"),
             ("roa", "roa_ind_neutral"),
-            ("revenue_yoy", "revenue_yoy_ind_neutral"),
+            ("or_yoy", "revenue_yoy_ind_neutral"),
         ):
             industry_mean = industry_group[source_column].transform("mean")
             df[neutral_column] = df[source_column] - industry_mean
@@ -348,8 +348,8 @@ class IndustryFeatureGenerator:
             "ret_20": int(price_df["ret_20"].notna().sum()),
             "roe": int(fundamental_df["roe"].notna().sum()) if "roe" in fundamental_df else 0,
             "roa": int(fundamental_df["roa"].notna().sum()) if "roa" in fundamental_df else 0,
-            "revenue_yoy": int(fundamental_df["revenue_yoy"].notna().sum()) if "revenue_yoy" in fundamental_df else 0,
-            "L1_industry_name": int(output_df[self.INDUSTRY_LEVEL_COLUMN].notna().sum()),
+            "or_yoy": int(fundamental_df["or_yoy"].notna().sum()) if "or_yoy" in fundamental_df else 0,
+            "l1_name": int(output_df[self.INDUSTRY_LEVEL_COLUMN].notna().sum()),
         }
         self.logger.info("行业因子源数据覆盖：trade_date=%s, non_null_counts=%s", trade_date, source_nonnull)
 
@@ -360,7 +360,7 @@ class IndustryFeatureGenerator:
         for source_column, neutral_column in (
             ("roe", "roe_ind_neutral"),
             ("roa", "roa_ind_neutral"),
-            ("revenue_yoy", "revenue_yoy_ind_neutral"),
+            ("or_yoy", "revenue_yoy_ind_neutral"),
         ):
             if source_nonnull[source_column] == 0:
                 self.logger.warning("trade_date=%s 的上游 %s 全为空，%s 将全部为空。", trade_date, source_column, neutral_column)
@@ -390,7 +390,7 @@ class IndustryFeatureGenerator:
             summary.output_dir,
         )
         if summary.missing_l1_rows:
-            self.logger.warning("输出中有 %d 行缺失 L1_industry_name；行业收益/中性化因子为 NaN，L1 one-hot 全 0。", summary.missing_l1_rows)
+            self.logger.warning("输出中有 %d 行缺失 l1_name/中性化因子为 NaN，L1 one-hot 全 0。", summary.missing_l1_rows)
         if summary.duplicate_price_volume_key_rows:
             self.logger.warning("价格量因子输入存在 %d 行重复 trade_date+ts_code，请关注上游生成结果。", summary.duplicate_price_volume_key_rows)
         if summary.duplicate_fundamental_key_rows:

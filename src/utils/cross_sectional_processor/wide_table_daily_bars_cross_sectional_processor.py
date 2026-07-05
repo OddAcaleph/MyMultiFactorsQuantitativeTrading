@@ -79,18 +79,26 @@ class WideTableDailyBarsCrossSectionalProcessor:
         "eps",
         "bps",
     )
+    FACTOR_SOURCE_COLUMNS: Mapping[str, str] = {
+        "revenue_yoy": "or_yoy",
+        "debt_ratio": "debt_to_assets",
+    }
 
     def __init__(
         self,
         input_dir: str | Path | None = None,
         output_dir: str | Path | None = None,
         factor_columns: Sequence[str] | None = None,
+        start_date: str | int | None = None,
+        end_date: str | int | None = None,
         logger: logging.Logger | None = None,
         fail_fast: bool = False,
     ) -> None:
         self.input_dir = Path(input_dir or self.DEFAULT_INPUT_DIR)
         self.output_dir = Path(output_dir or self.DEFAULT_OUTPUT_DIR)
         self.factor_columns = tuple(factor_columns or self.FACTOR_COLUMNS)
+        self.start_date = self._parse_optional_date(start_date, "start_date")
+        self.end_date = self._parse_optional_date(end_date, "end_date")
         self.logger = logger or logging.getLogger(self.__class__.__name__)
         self.fail_fast = fail_fast
 
@@ -98,6 +106,8 @@ class WideTableDailyBarsCrossSectionalProcessor:
             raise FileNotFoundError(f"Input directory does not exist: {self.input_dir}")
         if not self.input_dir.is_dir():
             raise ValueError(f"Input path is not a directory: {self.input_dir}")
+        if self.start_date is not None and self.end_date is not None and self.start_date > self.end_date:
+            raise ValueError(f"start_date must be <= end_date, got {self.start_date} > {self.end_date}")
 
     def process(self) -> WideTableDailyBarsCrossSectionalSummary:
         """Process every daily parquet file and preserve relative output paths."""
@@ -163,10 +173,34 @@ class WideTableDailyBarsCrossSectionalProcessor:
         return summary
 
     def _list_input_files(self) -> list[Path]:
-        files = sorted(self.input_dir.glob("year=*/month=*/*.parquet"))
+        files = [file_path for file_path in sorted(self.input_dir.glob("year=*/month=*/*.parquet")) if self._is_file_date_in_range(file_path)]
         if not files:
             raise FileNotFoundError(f"No daily parquet files found under: {self.input_dir}")
         return files
+
+    def _is_file_date_in_range(self, file_path: Path) -> bool:
+        try:
+            file_date = int(file_path.stem)
+        except ValueError:
+            self.logger.warning("跳过无法从文件名解析交易日的 wide_table_daily_bars 文件：%s", file_path)
+            return False
+        if self.start_date is not None and file_date < self.start_date:
+            return False
+        if self.end_date is not None and file_date > self.end_date:
+            return False
+        return True
+
+    @staticmethod
+    def _parse_optional_date(value: str | int | None, name: str) -> int | None:
+        if value is None or value == "":
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{name} must be in YYYYMMDD format, got {value!r}") from exc
+        if len(str(parsed)) != 8:
+            raise ValueError(f"{name} must be in YYYYMMDD format, got {value!r}")
+        return parsed
 
     def _output_file_for(self, input_file: Path) -> Path:
         return self.output_dir / input_file.relative_to(self.input_dir)
@@ -178,8 +212,9 @@ class WideTableDailyBarsCrossSectionalProcessor:
         processed = df.copy()
         processed[self.DATE_COLUMN] = processed[self.DATE_COLUMN]
         for factor in self.factor_columns:
+            source_column = self.FACTOR_SOURCE_COLUMNS.get(factor, factor)
             temp_factor = f"__{factor}_winsorized"
-            processed[temp_factor] = pd.to_numeric(processed[factor], errors="coerce")
+            processed[temp_factor] = pd.to_numeric(processed[source_column], errors="coerce")
             processed[temp_factor] = winsorize_by_trade_date(processed, temp_factor, date_column=self.DATE_COLUMN)
             processed[f"{factor}_cc_processed"] = zscore_by_trade_date(
                 processed,
@@ -192,7 +227,8 @@ class WideTableDailyBarsCrossSectionalProcessor:
 
     def _validate_columns(self, columns: Iterable[str]) -> None:
         column_set = set(columns)
-        required_columns = (*self.KEY_COLUMNS, *self.factor_columns)
+        required_factor_columns = tuple(self.FACTOR_SOURCE_COLUMNS.get(factor, factor) for factor in self.factor_columns)
+        required_columns = (*self.KEY_COLUMNS, *required_factor_columns)
         missing_columns = tuple(column for column in required_columns if column not in column_set)
         if missing_columns:
             raise MissingRequiredColumnsError(missing_columns)
@@ -264,6 +300,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=list(WideTableDailyBarsCrossSectionalProcessor.FACTOR_COLUMNS),
         help="Factor columns to process. Each output column is named {factor}_cc_processed.",
     )
+    parser.add_argument("--start-date", default=None, help="Optional inclusive start date in YYYYMMDD format.")
+    parser.add_argument("--end-date", default=None, help="Optional inclusive end date in YYYYMMDD format.")
     parser.add_argument("--fail-fast", action="store_true", help="Stop immediately when any input file fails.")
     parser.add_argument("--log-level", default="INFO", help="Logging level, e.g. INFO or DEBUG.")
     parser.add_argument(
@@ -281,6 +319,8 @@ def main(argv: Sequence[str] | None = None) -> WideTableDailyBarsCrossSectionalS
         input_dir=args.input_dir,
         output_dir=args.output_dir,
         factor_columns=args.factor_columns,
+        start_date=args.start_date,
+        end_date=args.end_date,
         fail_fast=args.fail_fast,
     )
     return processor.process()

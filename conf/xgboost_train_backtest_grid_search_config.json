@@ -1,7 +1,7 @@
 {
-  "model_root": "/mnt/bn/aigc-algorithm-group/qyd/pp/xgboost_grid_search_models",
-  "log_path": "${PROJECT_ROOT}/log/search_best_params/xgb_train",
-  "backtest_output_root": "/mnt/bn/aigc-algorithm-group/qyd/pp/xgboost_grid_search_outputs",
+  "model_root": "/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/models/xgboost_model_0621.json",
+  "log_path": "/opt/tiger/qyd/qyd/log/xgb_train",
+  "backtest_output_root": "/opt/tiger/qyd/qyd/output/xgboost_grid_search_outputs",
   "verbose": "50",
   "label_name_grid": "label_1d,label_2d,label_3d,label_5d,label_10d,label_20d,label_rank_1d,label_rank_2d,label_rank_3d,label_rank_5d,label_rank_10d,label_rank_20d",
   "n_estimators_grid": "100,200,300,400,500",

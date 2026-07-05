@@ -29,7 +29,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -87,6 +87,9 @@ class FundamentalsFetcher:
 
     FUNDAMENTALS_SUBDIR = "fundamentals"
     COMPLETED_PROGRESS_KEY = "financial_completed_codes"
+    CODE_WATERMARKS_KEY = "financial_code_watermarks"
+    DATE_WATERMARK_KEY = "financial_date_watermark"
+    DATE_COLUMN = "ann_date"
 
     def __init__(
         self,
@@ -144,10 +147,52 @@ class FundamentalsFetcher:
         self.logger.info("待处理 A 股股票数量：%d", len(codes))
 
         progress = self._load_progress()
-        progress_key = f"{self.COMPLETED_PROGRESS_KEY}:{start_date}:{end_date}"
-        completed_codes = set(progress.get(progress_key, []))
-        pending_codes = codes if force_fetch else [code for code in codes if code not in completed_codes]
-        skipped_codes = 0 if force_fetch else len(codes) - len(pending_codes)
+
+        if not force_fetch and ts_codes is None and self._has_existing_history():
+            market_start_date = self._resolve_market_incremental_start_date(progress, start_date)
+            if market_start_date > end_date:
+                self.logger.info(
+                    "fundamentals 历史数据已覆盖到 %s，无需拉取 %s ~ %s。",
+                    self._previous_date(market_start_date),
+                    start_date,
+                    end_date,
+                )
+                return FundamentalsFetchSummary(
+                    start_date=start_date,
+                    end_date=end_date,
+                    total_codes=len(codes),
+                    fetched_codes=0,
+                    skipped_codes=len(codes),
+                    failed_codes=(),
+                    rows_written=0,
+                    output_dir=self.fundamentals_dir,
+                )
+
+            market_summary = self._try_fetch_market_incremental(
+                requested_start_date=start_date,
+                effective_start_date=market_start_date,
+                end_date=end_date,
+                total_codes=len(codes),
+                sleep_time=sleep_time,
+                retry_wait_seconds=retry_wait_seconds,
+                max_retries=max_retries,
+                progress=progress,
+            )
+            if market_summary is not None:
+                return market_summary
+
+        code_watermarks = self._progress_mapping(progress, self.CODE_WATERMARKS_KEY)
+        pending_codes: list[tuple[str, str]] = []
+        skipped_codes = 0
+        if force_fetch:
+            pending_codes = [(code, start_date) for code in codes]
+        else:
+            for code in codes:
+                effective_start_date = self._resolve_code_incremental_start_date(code, code_watermarks, start_date)
+                if effective_start_date > end_date:
+                    skipped_codes += 1
+                    continue
+                pending_codes.append((code, effective_start_date))
 
         if not pending_codes:
             self.logger.info("fundamentals 已全部拉取完成，无需重复拉取。")
@@ -166,10 +211,10 @@ class FundamentalsFetcher:
         fetched_codes: list[str] = []
         failed_codes: list[str] = []
 
-        for index, ts_code in enumerate(pending_codes, start=1):
+        for index, (ts_code, effective_start_date) in enumerate(pending_codes, start=1):
             df = self._fetch_one_code(
                 ts_code=ts_code,
-                start_date=start_date,
+                start_date=effective_start_date,
                 end_date=end_date,
                 max_retries=max_retries,
                 sleep_time=sleep_time,
@@ -181,16 +226,16 @@ class FundamentalsFetcher:
 
             rows_written += self._save_one_code(ts_code, df)
             fetched_codes.append(ts_code)
-            completed_codes.add(ts_code)
+            code_watermarks[ts_code] = end_date
 
             if index % 50 == 0 or index == len(pending_codes):
-                progress[progress_key] = sorted(completed_codes)
+                progress[self.CODE_WATERMARKS_KEY] = dict(sorted(code_watermarks.items()))
                 self._save_progress(progress)
                 self.logger.info(
                     "fundamentals 进度：本次 %d/%d，累计完成 %d/%d，失败累计=%d，累计写入行数=%d",
                     index,
                     len(pending_codes),
-                    len(completed_codes),
+                    len(codes) - skipped_codes - len(failed_codes),
                     len(codes),
                     len(failed_codes),
                     rows_written,
@@ -208,6 +253,100 @@ class FundamentalsFetcher:
         )
         self._log_summary(summary)
         return summary
+
+    def _try_fetch_market_incremental(
+        self,
+        requested_start_date: str,
+        effective_start_date: str,
+        end_date: str,
+        total_codes: int,
+        sleep_time: float,
+        retry_wait_seconds: float,
+        max_retries: int,
+        progress: dict[str, object],
+    ) -> FundamentalsFetchSummary | None:
+        """Fetch recent fundamentals for all stocks in one date-range request.
+
+        For daily updates this avoids querying every stock individually.  If the
+        Tushare-compatible endpoint does not support market-wide
+        ``fina_indicator`` queries for the requested range, return ``None`` so
+        the caller can fall back to per-code incremental fetching.
+        """
+
+        self.logger.info(
+            "检测到已有 fundamentals 历史数据，尝试按公告日期增量拉取全市场：%s ~ %s",
+            effective_start_date,
+            end_date,
+        )
+        df = self._fetch_market_range(
+            start_date=effective_start_date,
+            end_date=end_date,
+            sleep_time=sleep_time,
+            retry_wait_seconds=retry_wait_seconds,
+            max_retries=max_retries,
+        )
+        if df is None:
+            self.logger.warning("全市场 fundamentals 增量拉取不可用，将回退到逐股票增量拉取。")
+            return None
+
+        try:
+            rows_written = self._save_market_frame_by_code(df)
+        except ValueError as exc:
+            self.logger.warning("全市场 fundamentals 增量结果不可用：%s，将回退到逐股票增量拉取。", exc)
+            return None
+        progress[self.DATE_WATERMARK_KEY] = end_date
+        self._save_progress(progress)
+        fetched_codes = tuple(sorted(df["ts_code"].dropna().astype(str).unique().tolist())) if not df.empty and "ts_code" in df.columns else ()
+        summary = FundamentalsFetchSummary(
+            start_date=requested_start_date,
+            end_date=end_date,
+            total_codes=total_codes,
+            fetched_codes=len(fetched_codes),
+            skipped_codes=total_codes - len(fetched_codes),
+            failed_codes=(),
+            rows_written=rows_written,
+            output_dir=self.fundamentals_dir,
+        )
+        self._log_summary(summary)
+        return summary
+
+    def _fetch_market_range(
+        self,
+        start_date: str,
+        end_date: str,
+        sleep_time: float,
+        retry_wait_seconds: float,
+        max_retries: int,
+    ) -> pd.DataFrame | None:
+        for retry_idx in range(1, max_retries + 1):
+            try:
+                df = self.pro.fina_indicator(start_date=start_date, end_date=end_date)
+                if df is None:
+                    df = pd.DataFrame()
+                time.sleep(sleep_time)
+                return df
+            except Exception as exc:  # pragma: no cover - depends on remote API
+                self.logger.warning(
+                    "全市场 fundamentals/fina_indicator %s~%s 拉取失败（第 %d/%d 次）：%s",
+                    start_date,
+                    end_date,
+                    retry_idx,
+                    max_retries,
+                    exc,
+                )
+                if retry_idx < max_retries:
+                    time.sleep(retry_wait_seconds * retry_idx)
+        return None
+
+    def _save_market_frame_by_code(self, df: pd.DataFrame) -> int:
+        if df.empty:
+            return 0
+        if "ts_code" not in df.columns:
+            raise ValueError("fina_indicator market response does not contain required column: ts_code")
+        rows_written = 0
+        for ts_code, group in df.groupby("ts_code"):
+            rows_written += self._save_one_code(str(ts_code), group.reset_index(drop=True))
+        return rows_written
 
     def get_all_ashare_codes(self) -> list[str]:
         """Return all A-share ts_code values, including delisted/suspended ones."""
@@ -274,6 +413,93 @@ class FundamentalsFetcher:
         df.to_parquet(file_path, compression="snappy", index=False)
         return rows_written
 
+    def _has_existing_history(self) -> bool:
+        merged_file = self.fundamentals_dir / DEFAULT_MERGED_OUTPUT_FILE_NAME
+        if merged_file.exists():
+            return True
+        return any(
+            file_path.is_file() and file_path.name != DEFAULT_MERGED_OUTPUT_FILE_NAME
+            for file_path in self.fundamentals_dir.glob("*.parquet")
+        )
+
+    def _resolve_market_incremental_start_date(self, progress: dict[str, object], requested_start_date: str) -> str:
+        watermark = progress.get(self.DATE_WATERMARK_KEY)
+        max_existing_date = str(watermark) if self._is_valid_yyyymmdd(watermark) else self._max_existing_date()
+        if not max_existing_date:
+            return requested_start_date
+        return max(requested_start_date, self._next_date(max_existing_date))
+
+    def _resolve_code_incremental_start_date(
+        self,
+        ts_code: str,
+        code_watermarks: dict[str, str],
+        requested_start_date: str,
+    ) -> str:
+        max_existing_date = code_watermarks.get(ts_code) or self._max_existing_code_date(ts_code)
+        if not max_existing_date:
+            return requested_start_date
+        return max(requested_start_date, self._next_date(max_existing_date))
+
+    def _max_existing_date(self) -> str | None:
+        merged_file = self.fundamentals_dir / DEFAULT_MERGED_OUTPUT_FILE_NAME
+        candidates: list[str] = []
+        if merged_file.exists():
+            max_date = self._max_date_in_file(merged_file, self.DATE_COLUMN)
+            if max_date:
+                candidates.append(max_date)
+        if not candidates:
+            for file_path in self.fundamentals_dir.glob("*.parquet"):
+                if file_path.name == DEFAULT_MERGED_OUTPUT_FILE_NAME:
+                    continue
+                max_date = self._max_date_in_file(file_path, self.DATE_COLUMN)
+                if max_date:
+                    candidates.append(max_date)
+        return max(candidates) if candidates else None
+
+    def _max_existing_code_date(self, ts_code: str) -> str | None:
+        return self._max_date_in_file(self.fundamentals_dir / f"{ts_code}.parquet", self.DATE_COLUMN)
+
+    @staticmethod
+    def _max_date_in_file(file_path: Path, date_column: str) -> str | None:
+        if not file_path.exists():
+            return None
+        try:
+            df = pd.read_parquet(file_path, columns=[date_column])
+        except Exception:
+            return None
+        if df.empty or date_column not in df.columns:
+            return None
+        dates = df[date_column].dropna().astype(str).str.replace("-", "", regex=False)
+        dates = dates[dates.str.fullmatch(r"\d{8}")]
+        if dates.empty:
+            return None
+        return str(dates.max())
+
+    @staticmethod
+    def _progress_mapping(progress: dict[str, object], key: str) -> dict[str, str]:
+        value = progress.get(key, {})
+        if not isinstance(value, dict):
+            return {}
+        return {str(k): str(v) for k, v in value.items() if FundamentalsFetcher._is_valid_yyyymmdd(v)}
+
+    @staticmethod
+    def _next_date(value: str) -> str:
+        return (datetime.strptime(value, "%Y%m%d") + timedelta(days=1)).strftime("%Y%m%d")
+
+    @staticmethod
+    def _previous_date(value: str) -> str:
+        return (datetime.strptime(value, "%Y%m%d") - timedelta(days=1)).strftime("%Y%m%d")
+
+    @staticmethod
+    def _is_valid_yyyymmdd(value: object) -> bool:
+        if not isinstance(value, str):
+            return False
+        try:
+            datetime.strptime(value, "%Y%m%d")
+            return True
+        except ValueError:
+            return False
+
     def _code_output_file_exists(self, ts_code: str) -> bool:
         return (self.fundamentals_dir / f"{ts_code}.parquet").exists()
 
@@ -311,13 +537,13 @@ class FundamentalsFetcher:
         except ValueError as exc:
             raise ValueError(f"{name} must use YYYYMMDD format, got {value!r}") from exc
 
-    def _load_progress(self) -> dict[str, list[str]]:
+    def _load_progress(self) -> dict[str, object]:
         if not self.progress_file.exists():
             return {}
         with self.progress_file.open("r", encoding="utf-8") as f:
             return json.load(f)
 
-    def _save_progress(self, progress: dict[str, list[str]]) -> None:
+    def _save_progress(self, progress: dict[str, object]) -> None:
         with self.progress_file.open("w", encoding="utf-8") as f:
             json.dump(progress, f, ensure_ascii=False, indent=2)
 

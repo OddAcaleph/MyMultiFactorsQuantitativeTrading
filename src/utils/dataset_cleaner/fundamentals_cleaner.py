@@ -72,8 +72,8 @@ class FundamentalsCleaner:
     FACTOR_COLUMNS: tuple[str, ...] = (
         "roe",
         "roa",
-        "revenue_yoy",
-        "debt_ratio",
+        "or_yoy",
+        "debt_to_assets",
         "gross_margin",
         "eps",
         "bps",

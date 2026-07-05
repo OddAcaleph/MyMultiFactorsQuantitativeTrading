@@ -41,7 +41,7 @@ class FundamentalFeatureGenerator:
     """Generate daily fundamental factors and cross-sectional ranks.
 
     Source factors are preserved directly from cleaned ``fundamentals``:
-    ``roe``, ``roa``, ``revenue_yoy``, ``gross_margin``, ``debt_ratio``,
+    ``roe``, ``roa``, ``or_yoy``, ``gross_margin``, ``debt_to_assets``,
     ``eps`` and ``bps``.
 
     Derived factors:
@@ -69,9 +69,9 @@ class FundamentalFeatureGenerator:
     SOURCE_COLUMNS: tuple[str, ...] = (
         "roe",
         "roa",
-        "revenue_yoy",
+        "or_yoy",
         "gross_margin",
-        "debt_ratio",
+        "debt_to_assets",
         "eps",
         "bps",
     )
@@ -270,7 +270,7 @@ class FundamentalFeatureGenerator:
         df["roe_roa_gap"] = df["roe"] - df["roa"]
         df["roe_rank"] = df["roe"].rank(method="average", ascending=True, pct=True)
         df["roa_rank"] = df["roa"].rank(method="average", ascending=True, pct=True)
-        df["revenue_yoy_rank"] = df["revenue_yoy"].rank(method="average", ascending=True, pct=True)
+        df["revenue_yoy_rank"] = df["or_yoy"].rank(method="average", ascending=True, pct=True)
         return df.loc[:, self._output_columns()].sort_values(["trade_date", "ts_code"], kind="mergesort").reset_index(drop=True)
 
     def _write_daily_file(self, output_df: pd.DataFrame, trade_date: int) -> Path:

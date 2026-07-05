@@ -49,8 +49,9 @@ class DailyBarsCleaner:
     1. ``ts_code`` + ``trade_date`` uniqueness. Duplicate rows are removed from
        the cleaned output, keeping the first occurrence encountered in the
        sorted parquet-file order.
-    2. Missing values across all DailyBars columns. Rows containing any missing
-       required value are removed from the cleaned output.
+    2. Missing values in ``open``/``high``/``low``/``close``. Rows containing
+       missing OHLC values are removed from the cleaned output. ``pre_close``,
+       ``change`` and ``pct_chg`` are allowed to be missing.
 
     Raw input parquet files are only read; they are never modified in place.
     """
@@ -71,6 +72,7 @@ class DailyBarsCleaner:
         "amount",
     )
     REQUIRED_COLUMNS: tuple[str, ...] = (*KEY_COLUMNS, *VALUE_COLUMNS)
+    MISSING_CHECK_COLUMNS: tuple[str, ...] = ("open", "high", "low", "close")
 
     def __init__(
         self,
@@ -169,7 +171,7 @@ class DailyBarsCleaner:
     def _clean_dataframe(self, df: pd.DataFrame, seen_keys: set[tuple[str, str]]) -> tuple[pd.DataFrame, int, int]:
         cleaned = df.copy()
 
-        missing_mask = cleaned.loc[:, self.REQUIRED_COLUMNS].isna().any(axis=1)
+        missing_mask = cleaned.loc[:, self.MISSING_CHECK_COLUMNS].isna().any(axis=1)
         missing_count = int(missing_mask.sum())
         if missing_count:
             cleaned = cleaned.loc[~missing_mask].copy()

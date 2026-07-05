@@ -1,0 +1,7 @@
+pandas
+tushare
+numpy
+pyqlib==0.9.7
+pyarrow
+matplotlib
+xgboost==0.3.2

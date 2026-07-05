@@ -69,8 +69,8 @@ class WideTableDailyBarsBuilder:
     4. Merge fundamentals as point-in-time features: for each daily row, use the
        latest fundamental record whose ``ann_date`` is not later than
        ``trade_date``. Then merge cleaned MoneyFlow features by ``trade_date`` +
-       ``ts_code`` before processed industry one-hot features by
-       ``ts_code``.
+       ``ts_code`` before processed industry one-hot features by ``ts_code`` and
+       the industry validity interval ``in_date <= trade_date < out_date``.
 
     Source data is never modified. Output files are written under
     ``data/processd_data/wide_table_daily_bars`` by default, preserving the daily-bars
@@ -315,16 +315,27 @@ class WideTableDailyBarsBuilder:
 
         self.logger.info("加载 processed industry one-hot 特征：%s", self.industry_file)
         industry_df = pd.read_parquet(self.industry_file)
-        self._validate_columns(industry_df.columns, ("ts_code",), self.industry_file)
+        self._validate_columns(industry_df.columns, ("ts_code", "in_date", "out_date"), self.industry_file)
         industry_df = industry_df.copy()
         industry_df["ts_code"] = industry_df["ts_code"].astype("string").str.strip()
         industry_df = industry_df.loc[~self._is_null_or_empty(industry_df["ts_code"])].copy()
-        if industry_df.duplicated(subset=["ts_code"], keep=False).any():
-            duplicate_rows = int(industry_df.duplicated(subset=["ts_code"], keep=False).sum())
-            self.logger.warning("industry one-hot 存在 %d 行重复 ts_code，保留最后一条。", duplicate_rows)
-            industry_df = industry_df.drop_duplicates(subset=["ts_code"], keep="last")
-        industry_feature_columns = tuple(column for column in industry_df.columns if column != "ts_code")
-        industry_df = industry_df.set_index("ts_code", drop=True).sort_index()
+        industry_df["in_date"] = self._normalize_yyyymmdd(industry_df["in_date"], "in_date", self.industry_file)
+        industry_df["out_date"] = self._normalize_optional_yyyymmdd(industry_df["out_date"], "out_date", self.industry_file)
+        industry_df["_in_dt"] = pd.to_datetime(industry_df["in_date"].astype("string"), format="%Y%m%d", errors="coerce")
+        industry_df["_out_dt"] = pd.to_datetime(industry_df["out_date"].astype("string"), format="%Y%m%d", errors="coerce")
+
+        invalid_industry_rows = int(industry_df["_in_dt"].isna().sum())
+        if invalid_industry_rows:
+            self.logger.warning("industry one-hot 存在 %d 行无效 in_date，已剔除。", invalid_industry_rows)
+            industry_df = industry_df.loc[industry_df["_in_dt"].notna()].copy()
+
+        duplicate_rows = int(industry_df.duplicated(subset=["ts_code", "in_date", "out_date"], keep=False).sum())
+        if duplicate_rows:
+            self.logger.warning("industry one-hot 存在 %d 行重复 ts_code+in_date+out_date，保留最后一条。", duplicate_rows)
+            industry_df = industry_df.drop_duplicates(subset=["ts_code", "in_date", "out_date"], keep="last")
+
+        industry_feature_columns = tuple(column for column in industry_df.columns if column not in {"ts_code", "in_date", "out_date", "_in_dt", "_out_dt"})
+        industry_df = industry_df.sort_values(["_in_dt", "ts_code", "out_date"], kind="mergesort").reset_index(drop=True)
 
         self.logger.info(
             "特征表加载完成：namechange_rows=%d, suspend_rows=%d, adj_rows=%d, fundamentals_rows=%d, "
@@ -413,8 +424,8 @@ class WideTableDailyBarsBuilder:
             "ann_date",
             "roe",
             "roa",
-            "revenue_yoy",
-            "debt_ratio",
+            "or_yoy",
+            "debt_to_assets",
             "gross_margin",
             "eps",
             "bps",
@@ -524,9 +535,53 @@ class WideTableDailyBarsBuilder:
         industry_df: pd.DataFrame,
         industry_feature_columns: Sequence[str],
     ) -> tuple[pd.DataFrame, int]:
-        aligned_features = industry_df.reindex(daily_df["ts_code"]).reset_index(drop=True)
-        matched_rows = int(aligned_features.notna().any(axis=1).sum()) if not aligned_features.empty else 0
-        merged = pd.concat([daily_df.reset_index(drop=True), aligned_features], axis=1)
+        industry_output_columns = ["in_date", "out_date", *industry_feature_columns]
+        if industry_df.empty:
+            aligned_features = pd.DataFrame(index=daily_df.index, columns=industry_output_columns)
+            matched_rows = 0
+            merged = pd.concat([daily_df.reset_index(drop=True), aligned_features.reset_index(drop=True)], axis=1)
+            for column in industry_feature_columns:
+                if column in merged.columns:
+                    merged[column] = merged[column].fillna(0).astype("int8")
+            return merged, matched_rows
+
+        unique_trade_dates = daily_df["trade_date"].drop_duplicates()
+        if len(unique_trade_dates) == 1:
+            trade_date = int(unique_trade_dates.iloc[0])
+            active_mask = (industry_df["in_date"] <= trade_date) & (industry_df["out_date"].isna() | (industry_df["out_date"] > trade_date))
+            active_industry = (
+                industry_df.loc[active_mask]
+                .drop_duplicates(subset=["ts_code"], keep="last")
+                .set_index("ts_code", drop=True)
+            )
+            aligned_features = active_industry.reindex(daily_df["ts_code"]).reset_index(drop=True)
+            aligned_features = aligned_features.loc[:, [column for column in industry_output_columns if column in aligned_features.columns]]
+        else:
+            left = daily_df.reset_index(names="_left_row").copy()
+            left["_trade_dt"] = pd.to_datetime(left["trade_date"].astype("string"), format="%Y%m%d", errors="coerce")
+            left_sorted = left.sort_values(["_trade_dt", "ts_code", "_left_row"], kind="mergesort")
+            industry_sorted = industry_df.sort_values(["_in_dt", "ts_code", "out_date"], kind="mergesort")
+            aligned = pd.merge_asof(
+                left_sorted,
+                industry_sorted,
+                left_on="_trade_dt",
+                right_on="_in_dt",
+                by="ts_code",
+                direction="backward",
+                allow_exact_matches=True,
+            )
+            active_mask = aligned["in_date"].notna() & (aligned["out_date"].isna() | (aligned["out_date"] > aligned["trade_date"]))
+            for column in industry_output_columns:
+                if column in aligned.columns:
+                    aligned.loc[~active_mask, column] = pd.NA
+            aligned_features = aligned.sort_values("_left_row", kind="mergesort").loc[:, industry_output_columns].reset_index(drop=True)
+
+        for column in industry_output_columns:
+            if column not in aligned_features.columns:
+                aligned_features[column] = pd.NA
+        aligned_features = aligned_features.loc[:, industry_output_columns]
+        matched_rows = int(aligned_features["in_date"].notna().sum()) if "in_date" in aligned_features.columns else 0
+        merged = pd.concat([daily_df.reset_index(drop=True), aligned_features.reset_index(drop=True)], axis=1)
         for column in industry_feature_columns:
             if column in merged.columns:
                 merged[column] = merged[column].fillna(0).astype("int8")
@@ -588,6 +643,18 @@ class WideTableDailyBarsBuilder:
         if invalid_rows:
             raise ValueError(f"{file_path} has {invalid_rows} invalid {column_name} rows that cannot be parsed as YYYYMMDD.")
         return parsed.dt.strftime("%Y%m%d").astype("int32")
+
+    @classmethod
+    def _normalize_optional_yyyymmdd(cls, series: pd.Series, column_name: str, file_path: Path) -> pd.Series:
+        normalized = series.astype("string").str.strip().str.replace(r"\.0$", "", regex=True)
+        empty_mask = series.isna() | normalized.isin(["", "<NA>", "nan", "NaT", "None"])
+        parsed = pd.to_datetime(normalized.mask(empty_mask, pd.NA), format="%Y%m%d", errors="coerce")
+        invalid_rows = int((~empty_mask & parsed.isna()).sum())
+        if invalid_rows:
+            raise ValueError(f"{file_path} has {invalid_rows} invalid {column_name} rows that cannot be parsed as YYYYMMDD.")
+        result = pd.Series(pd.NA, index=series.index, dtype="Int32")
+        result.loc[~empty_mask] = parsed.loc[~empty_mask].dt.strftime("%Y%m%d").astype("int32")
+        return result
 
     @staticmethod
     def _is_null_or_empty(series: pd.Series) -> pd.Series:
