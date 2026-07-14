@@ -15,6 +15,7 @@ realistic daily portfolio simulation from parquet predictions and OHLCV bars:
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sys
 from pathlib import Path
@@ -57,6 +58,16 @@ class SimpleBacktester:
 
     DEFAULT_PRICE_PATH = PROJECT_ROOT / "data" / "processd_data" / "wide_table_daily_bars"
     DEFAULT_BENCHMARK_PATH = Path("/opt/tiger/qyd/qlib_data_cn/features")
+    _TIMESTAMP_PLACEHOLDER = "${timestamp}"
+
+    @staticmethod
+    def _resolve_output_dir(value: str | Path) -> str:
+        """Replace ``${timestamp}`` placeholder with YYMMDD-HHMM."""
+        s = str(value)
+        if SimpleBacktester._TIMESTAMP_PLACEHOLDER in s:
+            from datetime import datetime
+            s = s.replace(SimpleBacktester._TIMESTAMP_PLACEHOLDER, datetime.now().strftime("%y%m%d-%H%M"))
+        return s
 
     def __init__(self, config_path: str | Path | None = None, **overrides: Any) -> None:
         self.config_path = config_path
@@ -69,7 +80,7 @@ class SimpleBacktester:
         self.price_path = Path(self.config.get("price_path", self.DEFAULT_PRICE_PATH))
         self.benchmark_path = Path(self.config.get("benchmark_path", self.DEFAULT_BENCHMARK_PATH))
         self.benchmark_lookback_days = int(self.config.get("benchmark_lookback_days", 31))
-        self.output_dir = Path(self.config.get("output_dir", PROJECT_ROOT / "outputs" / "simple_backtest"))
+        self.output_dir = Path(self._resolve_output_dir(self.config.get("output_dir", PROJECT_ROOT / "outputs" / "simple_backtest")))
         self.account = float(self.config.get("account", 1_000_000.0))
         self.freq = self.config.get("freq", "day")
 
@@ -269,47 +280,87 @@ class SimpleBacktester:
         return sorted(files)
 
     def load_benchmark_returns(self) -> pd.Series:
-        """Load benchmark returns from qlib ``*.day.bin`` files.
+        """Load benchmark returns.
 
-        Stock execution data still comes from ``wide_table_daily_bars``.  Only
-        the benchmark is read from qlib format, using ``change.day.bin`` when it
-        exists and falling back to ``close.day.bin`` pct-change otherwise.
+        Tries qlib ``*.day.bin`` files first.  When qlib benchmark data is
+        unavailable, falls back to computing an equal-weighted market return
+        from the daily bar parquet files used for execution pricing.
         """
 
-        features_dir = self._resolve_qlib_features_dir(self.benchmark_path)
-        benchmark_code = self._normalize_benchmark_code(self.benchmark)
-        qlib_instrument = self._benchmark_to_qlib_instrument(benchmark_code)
-        instrument_dir = features_dir / qlib_instrument
-        if not instrument_dir.exists():
-            raise FileNotFoundError(
-                f"Benchmark qlib directory does not exist: {instrument_dir}. "
-                f"Resolved benchmark {self.benchmark!r} -> {benchmark_code} -> {qlib_instrument}. "
-                "Please choose a benchmark available under the qlib features directory."
-            )
-
         benchmark_start_time = self.start_time - pd.Timedelta(days=self.benchmark_lookback_days)
-        change_file = instrument_dir / "change.day.bin"
-        if change_file.exists():
-            benchmark_series = self._read_qlib_day_bin(change_file, features_dir).astype(float)
-        else:
-            close_file = instrument_dir / "close.day.bin"
-            if not close_file.exists():
-                raise FileNotFoundError(
-                    f"Benchmark qlib files are missing: neither {change_file} nor {close_file} exists"
-                )
-            benchmark_series = self._read_qlib_day_bin(close_file, features_dir).astype(float).pct_change()
 
-        benchmark_series = benchmark_series.replace([np.inf, -np.inf], np.nan).dropna()
-        benchmark_series = benchmark_series.loc[
-            (benchmark_series.index >= benchmark_start_time) & (benchmark_series.index <= self.end_time)
-        ]
-        if benchmark_series.empty:
-            raise ValueError(
-                f"Benchmark {benchmark_code} ({qlib_instrument}) has no qlib return data after date filtering for "
-                f"{benchmark_start_time.date()} ~ {self.end_time.date()} under {instrument_dir}"
-            )
+        # --- Primary path: qlib binary format ---
+        try:
+            features_dir = self._resolve_qlib_features_dir(self.benchmark_path)
+            benchmark_code = self._normalize_benchmark_code(self.benchmark)
+            qlib_instrument = self._benchmark_to_qlib_instrument(benchmark_code)
+            instrument_dir = features_dir / qlib_instrument
+            if instrument_dir.exists():
+                change_file = instrument_dir / "change.day.bin"
+                if change_file.exists():
+                    benchmark_series = self._read_qlib_day_bin(change_file, features_dir).astype(float)
+                else:
+                    close_file = instrument_dir / "close.day.bin"
+                    if close_file.exists():
+                        benchmark_series = self._read_qlib_day_bin(close_file, features_dir).astype(float).pct_change()
+                    else:
+                        raise FileNotFoundError(
+                            f"Benchmark qlib files are missing: neither {change_file} nor {close_file} exists"
+                        )
+                benchmark_series = benchmark_series.replace([np.inf, -np.inf], np.nan).dropna()
+                benchmark_series = benchmark_series.loc[
+                    (benchmark_series.index >= benchmark_start_time) & (benchmark_series.index <= self.end_time)
+                ]
+                if not benchmark_series.empty:
+                    benchmark_series.name = "benchmark"
+                    return benchmark_series.sort_index()
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("无法从 qlib 加载基准指数，将使用 daily bars 的市场等权收益作为基准: %s", exc)
+
+        # --- Fallback: equal-weighted market return from daily bars ---
+        import warnings
+        warnings.warn(
+            f"Qlib benchmark data not available for {self.benchmark!r}. "
+            f"Falling back to equal-weighted market return from daily bars at {self.price_path}.",
+            RuntimeWarning,
+        )
+        benchmark_series = self._compute_equal_weighted_market_return(benchmark_start_time, self.end_time)
         benchmark_series.name = "benchmark"
         return benchmark_series.sort_index()
+
+    def _compute_equal_weighted_market_return(self, start: pd.Timestamp, end: pd.Timestamp) -> pd.Series:
+        """Compute equal-weighted market return from daily bar parquet files."""
+
+        files = self._parquet_files_between(self.price_path, start, end)
+        if not files:
+            raise FileNotFoundError(
+                f"No daily bar parquet files found in {self.price_path} for market benchmark: {start.date()} ~ {end.date()}"
+            )
+
+        daily_returns = []
+        for file_path in files:
+            df = pd.read_parquet(file_path)
+            if "pct_chg" not in df.columns:
+                if "close" in df.columns and "pre_close" in df.columns:
+                    df["pct_chg"] = (df["close"] / df["pre_close"] - 1.0) * 100.0
+                else:
+                    continue
+            rets = df["pct_chg"].replace([np.inf, -np.inf], np.nan).dropna()
+            if rets.empty:
+                continue
+            # pct_chg 单位是百分比（如 2.5 表示 2.5%），转成小数
+            mean_ret = float(rets.mean()) / 100.0
+            trade_date = df["trade_date"].iloc[0] if "trade_date" in df.columns else file_path.stem
+            daily_returns.append((pd.Timestamp(str(trade_date)), mean_ret))
+
+        if not daily_returns:
+            raise ValueError(f"无法从 daily bars 计算市场等权收益: {start.date()} ~ {end.date()}")
+
+        series = pd.Series(dict(daily_returns)).sort_index()
+        series = series.loc[(series.index >= start) & (series.index <= end)]
+        if series.empty:
+            raise ValueError(f"市场等权收益序列在日期过滤后为空: {start.date()} ~ {end.date()}")
+        return series
 
     @staticmethod
     def _resolve_qlib_features_dir(benchmark_path: Path) -> Path:

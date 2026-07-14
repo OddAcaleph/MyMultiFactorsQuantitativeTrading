@@ -1,10 +1,10 @@
 {
-  "daily_bars_dir": "/opt/tiger/qyd/qyd/data/cross_sectional_processd_data/wide_table_daily_bars",
-  "price_volume_factors_dir": "/opt/tiger/qyd/qyd/data/cross_sectional_processd_data/price_volume_factors",
-  "moneyflow_factors_dir": "/opt/tiger/qyd/qyd/data/cross_sectional_processd_data/moneyflow_factors",
-  "fundamental_factors_dir": "/opt/tiger/qyd/qyd/data/cross_sectional_processd_data/fundamental_factors",
-  "industry_factors_dir": "/opt/tiger/qyd/qyd/data/cross_sectional_processd_data/industry_factors",
-  "labels_dir": "/opt/tiger/qyd/qyd/data/generated_label/daily_labels",
+  "daily_bars_dir": "${PROJECT_ROOT}/data/cross_sectional_processd_data/wide_table_daily_bars",
+  "price_volume_factors_dir": "${PROJECT_ROOT}/data/cross_sectional_processd_data/price_volume_factors",
+  "moneyflow_factors_dir": "${PROJECT_ROOT}/data/cross_sectional_processd_data/moneyflow_factors",
+  "fundamental_factors_dir": "${PROJECT_ROOT}/data/cross_sectional_processd_data/fundamental_factors",
+  "industry_factors_dir": "${PROJECT_ROOT}/data/cross_sectional_processd_data/industry_factors",
+  "labels_dir": "${PROJECT_ROOT}/data/generated_label/daily_labels",
   "feature_cols": [
     "open",
     "high",

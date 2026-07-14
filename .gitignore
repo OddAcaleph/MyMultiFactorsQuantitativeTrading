@@ -77,4 +77,5 @@ output.json
 # 示例：忽略特定目录或文件
 data/
 outputs/
+output/
 models/

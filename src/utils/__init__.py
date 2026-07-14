@@ -21,6 +21,7 @@ from .config import (
     load_simple_backtester_config,
     load_trainer_config,
     load_xgboost_train_backtest_grid_search_config,
+    resolve_path,
 )
 from .ic_validator import (
     DailyICAnalyzer,
@@ -64,4 +65,5 @@ __all__ = [
     "load_simple_backtester_config",
     "load_trainer_config",
     "load_xgboost_train_backtest_grid_search_config",
+    "resolve_path",
 ]

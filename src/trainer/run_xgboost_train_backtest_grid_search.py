@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import gc
 import hashlib
 import itertools
 import json
 import logging
+import multiprocessing as mp
+import os
 import queue
 import re
 import sys
@@ -63,18 +66,8 @@ from backtester.simple_backtester import SimpleBacktester  # noqa: E402
 TRAINER_ONLY_GRID_KEYS = {"label_name"}
 
 
-def expand_project_path(value: str) -> str:
-    """Expand project-root placeholders used by grid-search config files."""
-
-    return value.replace("${PROJECT_ROOT}", str(PROJECT_ROOT))
-
-
 def load_grid_search_defaults(config_path: str | Path | None = None) -> dict[str, Any]:
-    defaults = load_xgboost_train_backtest_grid_search_config(config_path)
-    for key in ("model_root", "log_path", "backtest_output_root"):
-        if key in defaults and defaults[key] is not None:
-            defaults[key] = expand_project_path(str(defaults[key]))
-    return defaults
+    return load_xgboost_train_backtest_grid_search_config(config_path)
 
 
 _DEFAULT_GRID_SEARCH_CONFIG = load_grid_search_defaults()
@@ -90,6 +83,8 @@ DEFAULT_MODEL_ROOT = Path(_DEFAULT_GRID_SEARCH_CONFIG["model_root"])
 DEFAULT_LOG_PATH = Path(_DEFAULT_GRID_SEARCH_CONFIG["log_path"])
 DEFAULT_BACKTEST_OUTPUT_ROOT = Path(_DEFAULT_GRID_SEARCH_CONFIG["backtest_output_root"])
 DEFAULT_JOBS = int(_DEFAULT_GRID_SEARCH_CONFIG.get("jobs", 4))
+DEFAULT_TRAIN_WORKERS = int(_DEFAULT_GRID_SEARCH_CONFIG.get("train_workers", 1))
+DEFAULT_XGB_N_JOBS = int(_DEFAULT_GRID_SEARCH_CONFIG.get("xgb_n_jobs", 0))
 SENTINEL = object()
 
 
@@ -195,6 +190,41 @@ def parse_args() -> argparse.Namespace:
         default=int(grid_defaults.get("jobs", DEFAULT_JOBS)),
         help=f"Parallel backtest grid-search workers per trained model. Defaults to {grid_defaults.get('jobs', DEFAULT_JOBS)}. Use 0 to auto-select CPU count.",
     )
+    parser.add_argument(
+        "--train-workers",
+        type=int,
+        default=int(grid_defaults.get("train_workers", DEFAULT_TRAIN_WORKERS)),
+        help=(
+            f"Number of XGBoost models to train in parallel (process-based). "
+            f"Defaults to {grid_defaults.get('train_workers', DEFAULT_TRAIN_WORKERS)}. "
+            f"Use 0 to auto-select based on CPU count."
+        ),
+    )
+    parser.add_argument(
+        "--xgb-n-jobs",
+        type=int,
+        default=int(grid_defaults.get("xgb_n_jobs", DEFAULT_XGB_N_JOBS)),
+        help=(
+            "XGBoost n_jobs (threads) per single model training. "
+            "0 means keep the value from trainer config model_params. "
+            "Total CPU usage ≈ train_workers * xgb_n_jobs."
+        ),
+    )
+    parser.add_argument(
+        "--random-search",
+        type=int,
+        default=int(grid_defaults.get("random_search", 0)),
+        help=(
+            "Randomly sample N model-grid combinations instead of exhaustive search. "
+            "Useful when the full grid is too large. 0 means exhaustive search (default)."
+        ),
+    )
+    parser.add_argument(
+        "--random-seed",
+        type=int,
+        default=int(grid_defaults.get("random_seed", 42)),
+        help="Random seed for --random-search sampling. Defaults to 42.",
+    )
 
     # Optional pass-through overrides for the backtester; all default to None so
     # the SimpleBacktester config/default script behavior is preserved.
@@ -236,8 +266,8 @@ def parse_grid(value: str | None, cast: type, name: str) -> list[Any] | None:
     if not items:
         raise ValueError(f"{name} grid is empty")
     parsed = [cast(item) for item in items]
-    if any(item <= 0 for item in parsed):
-        raise ValueError(f"{name} grid values must be positive: {parsed}")
+    if any(item < 0 for item in parsed):
+        raise ValueError(f"{name} grid values must be non-negative: {parsed}")
     return parsed
 
 
@@ -270,6 +300,24 @@ def build_model_grid(args: argparse.Namespace) -> list[dict[str, Any]]:
     names = [name for name, _ in active]
     values_list = [values for _, values in active]
     return [dict(zip(names, values, strict=True)) for values in itertools.product(*values_list)]
+
+
+def sample_model_grid(full_grid: list[dict[str, Any]], n_samples: int, seed: int = 42) -> list[dict[str, Any]]:
+    """Randomly sample n_samples combinations from a full grid without replacement.
+
+    If n_samples >= len(full_grid), returns the full grid unchanged.
+    """
+    import random
+
+    if n_samples <= 0:
+        raise ValueError("random_search must be > 0")
+    if n_samples >= len(full_grid):
+        return list(full_grid)
+    rng = random.Random(seed)
+    sampled = rng.sample(full_grid, n_samples)
+    # Keep deterministic ordering for resume / reproducibility
+    sampled.sort(key=lambda p: json.dumps(json_safe(p), sort_keys=True))
+    return sampled
 
 
 def split_grid_params(params: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
@@ -474,92 +522,289 @@ def build_backtest_args(args: argparse.Namespace, prediction_path: Path, output_
     )
 
 
+def train_single_model(
+    trainer_config: str,
+    loader_config: str | None,
+    model_root: str,
+    train_output_root: str | None,
+    verbose: bool | int,
+    idx: int,
+    total: int,
+    params: dict[str, Any],
+    xgb_n_jobs_override: int,
+    force_cpu: bool,
+) -> dict[str, Any]:
+    """Train a single XGBoost model.
+
+    This is a top-level function so it can be pickled and executed by
+    ProcessPoolExecutor.  Returns a dict with all information needed to
+    construct a TrainedModelTask (or an error dict on failure).
+    """
+    # Re-import inside the worker process for safety (pickle handles it, but
+    # this keeps things robust when the module is run as __main__).
+    import sys
+    from pathlib import Path
+
+    project_root = Path(__file__).resolve().parents[2]
+    src_root = project_root / "src"
+    for path in (str(project_root), str(src_root)):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+    from trainer.xgboost_trainer import XGBoostTrainer
+
+    model_params, label_name = split_grid_params(params)
+    run_id = make_run_id(idx, params)
+    model_dir = Path(model_root) / run_id
+    model_path = model_dir / "xgboost_model.json"
+    output_dir = (Path(train_output_root) / run_id) if train_output_root else (model_dir / "train_outputs")
+
+    try:
+        if xgb_n_jobs_override > 0:
+            model_params = dict(model_params)
+            model_params["n_jobs"] = xgb_n_jobs_override
+
+        trainer = XGBoostTrainer(
+            config_path=trainer_config,
+            loader_config_path=loader_config,
+            output_dir=output_dir,
+            model_path=model_path,
+            label_name=label_name,
+            model_params=model_params,
+            prefer_gpu=False if force_cpu else None,
+        )
+        result = trainer.run(verbose=verbose, save=True)
+        prediction_path = output_dir / "pred_test.parquet"
+        if not model_path.exists():
+            raise FileNotFoundError(f"训练完成但模型文件不存在: {model_path}")
+        if not prediction_path.exists():
+            raise FileNotFoundError(f"训练完成但预测文件不存在: {prediction_path}")
+
+        meta = {
+            "run_id": run_id,
+            "idx": idx,
+            "total": total,
+            "grid_params": params,
+            "model_params": model_params,
+            "label_name": trainer.label_name,
+            "model_path": str(model_path),
+            "prediction_path": str(prediction_path),
+            "train_output_dir": str(output_dir),
+            "device_used": trainer.device_used,
+            "metrics": result.get("metrics", {}),
+        }
+        model_dir.mkdir(parents=True, exist_ok=True)
+        with (model_dir / "train_metadata.json").open("w", encoding="utf-8") as f:
+            json.dump(json_safe(meta), f, ensure_ascii=False, indent=2, allow_nan=True)
+
+        return {
+            "status": "success",
+            "idx": idx,
+            "total": total,
+            "run_id": run_id,
+            "params": params,
+            "model_params": model_params,
+            "label_name": trainer.label_name,
+            "model_path": str(model_path),
+            "prediction_path": str(prediction_path),
+            "train_output_dir": str(output_dir),
+            "train_metrics": result.get("metrics", {}),
+            "device_used": trainer.device_used,
+        }
+    except Exception as exc:  # noqa: BLE001
+        import traceback
+        return {
+            "status": "failed",
+            "idx": idx,
+            "total": total,
+            "run_id": run_id,
+            "params": params,
+            "model_params": model_params,
+            "label_name": label_name or "",
+            "error": str(exc),
+            "traceback": traceback.format_exc(),
+        }
+
+
+def resolve_train_workers(requested: int) -> int:
+    if requested < 0:
+        raise ValueError("--train-workers must be >= 0")
+    if requested == 0:
+        cpu = os.cpu_count() or 1
+        # 保守估计：每个模型用 4 核，留 2 核给回测和系统
+        return max(1, cpu // 4)
+    return max(1, requested)
+
+
 def train_worker(args: argparse.Namespace, model_grid: list[dict[str, Any]], task_queue: queue.Queue[Any]) -> None:
     model_root = Path(args.model_root)
     train_output_root = Path(args.train_output_root) if args.train_output_root else None
     verbose = parse_verbose(args.verbose)
+    train_workers = resolve_train_workers(args.train_workers)
 
     try:
-        logging.info("训练线程启动，共 %s 个 XGBoost 参数网格点。", len(model_grid))
-        for idx, params in enumerate(model_grid, start=1):
-            model_params, label_name = split_grid_params(params)
-            run_id = make_run_id(idx, params)
-            model_dir = model_root / run_id
-            model_path = model_dir / "xgboost_model.json"
-            output_dir = (train_output_root / run_id) if train_output_root else (model_dir / "train_outputs")
-
-            if args.resume:
+        # 先处理已完成的（断点续传），直接放入回测队列
+        pending_indices: list[int] = []
+        resumed_count = 0
+        if args.resume:
+            for idx, params in enumerate(model_grid, start=1):
                 resumed_task = find_completed_training_task(args, idx=idx, total=len(model_grid), params=params)
                 if resumed_task is not None:
+                    resumed_count += 1
                     logging.info(
-                        "[%s/%s] 训练已完成，断点续传跳过训练并进入回测队列: run_id=%s model=%s prediction=%s",
+                        "[%s/%s] 训练已完成，断点续传跳过训练并进入回测队列: run_id=%s",
                         idx,
                         len(model_grid),
                         resumed_task.run_id,
-                        resumed_task.model_path,
-                        resumed_task.prediction_path,
                     )
                     task_queue.put(resumed_task)
-                    continue
+                else:
+                    pending_indices.append(idx - 1)
+        else:
+            pending_indices = list(range(len(model_grid)))
 
-            logging.info("[%s/%s] 开始训练模型: run_id=%s params=%s", idx, len(model_grid), run_id, params)
-            try:
-                trainer = XGBoostTrainer(
-                    config_path=args.trainer_config,
-                    loader_config_path=args.loader_config,
-                    output_dir=output_dir,
-                    model_path=model_path,
-                    label_name=label_name,
-                    model_params=model_params,
-                    prefer_gpu=False if args.cpu else None,
+        total = len(model_grid)
+        logging.info(
+            "训练进程池启动: train_workers=%s, 总模型数=%s, 已恢复=%s, 待训练=%s",
+            train_workers,
+            total,
+            resumed_count,
+            len(pending_indices),
+        )
+
+        if not pending_indices:
+            logging.info("没有需要训练的模型，训练进程池退出。")
+            return
+
+        if train_workers == 1:
+            # 单进程模式：直接在当前线程执行，避免进程池开销
+            for grid_idx in pending_indices:
+                params = model_grid[grid_idx]
+                idx = grid_idx + 1
+                logging.info("[%s/%s] 开始训练模型: params=%s", idx, total, params)
+                result = train_single_model(
+                    trainer_config=args.trainer_config,
+                    loader_config=args.loader_config,
+                    model_root=str(model_root),
+                    train_output_root=str(train_output_root) if train_output_root else None,
+                    verbose=verbose,
+                    idx=idx,
+                    total=total,
+                    params=params,
+                    xgb_n_jobs_override=args.xgb_n_jobs,
+                    force_cpu=args.cpu,
                 )
-                result = trainer.run(verbose=verbose, save=True)
-                prediction_path = output_dir / "pred_test.parquet"
-                if not model_path.exists():
-                    raise FileNotFoundError(f"训练完成但模型文件不存在: {model_path}")
-                if not prediction_path.exists():
-                    raise FileNotFoundError(f"训练完成但预测文件不存在: {prediction_path}")
-
-                meta = {
-                    "run_id": run_id,
-                    "idx": idx,
-                    "total": len(model_grid),
-                    "grid_params": params,
-                    "model_params": model_params,
-                    "label_name": trainer.label_name,
-                    "model_path": str(model_path),
-                    "prediction_path": str(prediction_path),
-                    "train_output_dir": str(output_dir),
-                    "device_used": trainer.device_used,
-                    "metrics": result.get("metrics", {}),
-                }
-                model_dir.mkdir(parents=True, exist_ok=True)
-                with (model_dir / "train_metadata.json").open("w", encoding="utf-8") as f:
-                    json.dump(json_safe(meta), f, ensure_ascii=False, indent=2, allow_nan=True)
-
-                logging.info("[%s/%s] 训练完成: model=%s prediction=%s metrics=%s", idx, len(model_grid), model_path, prediction_path, result.get("metrics", {}))
-                task_queue.put(
-                    TrainedModelTask(
+                _handle_train_result(result, task_queue, args.fail_fast)
+                gc.collect()
+        else:
+            # 多进程模式：使用 ProcessPoolExecutor
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=train_workers,
+                mp_context=mp.get_context("spawn"),
+            ) as executor:
+                future_to_idx = {}
+                for grid_idx in pending_indices:
+                    params = model_grid[grid_idx]
+                    idx = grid_idx + 1
+                    future = executor.submit(
+                        train_single_model,
+                        trainer_config=args.trainer_config,
+                        loader_config=args.loader_config,
+                        model_root=str(model_root),
+                        train_output_root=str(train_output_root) if train_output_root else None,
+                        verbose=verbose,
                         idx=idx,
-                        total=len(model_grid),
-                        run_id=run_id,
-                        params=dict(params),
-                        model_params=dict(model_params),
-                        label_name=trainer.label_name,
-                        model_path=model_path,
-                        prediction_path=prediction_path,
-                        train_output_dir=output_dir,
-                        train_metrics=dict(result.get("metrics", {})),
-                        device_used=trainer.device_used,
+                        total=total,
+                        params=params,
+                        xgb_n_jobs_override=args.xgb_n_jobs,
+                        force_cpu=args.cpu,
                     )
-                )
-            except Exception as exc:  # noqa: BLE001
-                logging.exception("[%s/%s] 训练失败: params=%s error=%s", idx, len(model_grid), params, exc)
-                if args.fail_fast:
-                    raise
+                    future_to_idx[future] = idx
+
+                for future in concurrent.futures.as_completed(future_to_idx):
+                    idx = future_to_idx[future]
+                    try:
+                        result = future.result()
+                    except Exception as exc:  # noqa: BLE001
+                        logging.exception("[%s/%s] 训练进程异常: error=%s", idx, total, exc)
+                        if args.fail_fast:
+                            raise
+                        continue
+                    _handle_train_result(result, task_queue, args.fail_fast)
     finally:
         task_queue.put(SENTINEL)
         logging.info("训练线程结束，已发送回测结束信号。")
+
+
+def _handle_train_result(result: dict[str, Any], task_queue: queue.Queue[Any], fail_fast: bool) -> None:
+    idx = result["idx"]
+    total = result["total"]
+    if result["status"] == "success":
+        logging.info(
+            "[%s/%s] 训练完成: run_id=%s metrics=%s",
+            idx,
+            total,
+            result["run_id"],
+            result.get("train_metrics", {}),
+        )
+        task_queue.put(
+            TrainedModelTask(
+                idx=idx,
+                total=total,
+                run_id=result["run_id"],
+                params=dict(result["params"]),
+                model_params=dict(result["model_params"]),
+                label_name=result["label_name"],
+                model_path=Path(result["model_path"]),
+                prediction_path=Path(result["prediction_path"]),
+                train_output_dir=Path(result["train_output_dir"]),
+                train_metrics=dict(result.get("train_metrics", {})),
+                device_used=result.get("device_used"),
+            )
+        )
+    else:
+        logging.error(
+            "[%s/%s] 训练失败: params=%s error=%s",
+            idx,
+            total,
+            result.get("params", {}),
+            result.get("error", "unknown"),
+        )
+        if fail_fast:
+            raise RuntimeError(result.get("error", "training failed"))
+
+
+# --- Backtest process-pool worker globals -----------------------------------
+# These are set by _backtest_worker_init in each child process so that
+# evaluate_one can be called without repeatedly passing large preloaded data.
+_BT_CONFIG_PATH: str | None = None
+_BT_BASE_OVERRIDES: dict[str, Any] | None = None
+_BT_PRELOADED_DATA: Any = None
+
+
+def _backtest_worker_init(config_path: str, base_overrides: dict[str, Any]) -> None:
+    """Initialize backtest worker process globals."""
+    global _BT_CONFIG_PATH, _BT_BASE_OVERRIDES, _BT_PRELOADED_DATA
+    _BT_CONFIG_PATH = config_path
+    _BT_BASE_OVERRIDES = base_overrides
+    # Import inside worker to ensure the module path is set up correctly.
+    import sys
+    from pathlib import Path
+    project_root = Path(__file__).resolve().parents[2]
+    src_root = project_root / "src"
+    for path in (str(project_root), str(src_root)):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+    from backtester.run_simple_backtest_grid_search import preload_data
+    _BT_PRELOADED_DATA = preload_data(config_path, base_overrides)
+
+
+def _backtest_evaluate_one(params: dict[str, Any]) -> dict[str, Any]:
+    """Top-level function for backtest process-pool workers."""
+    if _BT_CONFIG_PATH is None or _BT_BASE_OVERRIDES is None or _BT_PRELOADED_DATA is None:
+        raise RuntimeError("Backtest worker is not initialized")
+    from backtester.run_simple_backtest_grid_search import evaluate_one
+    return evaluate_one(_BT_CONFIG_PATH, _BT_BASE_OVERRIDES, params, _BT_PRELOADED_DATA)
 
 
 def run_backtest_grid_for_model(args: argparse.Namespace, task: TrainedModelTask) -> dict[str, Any]:
@@ -648,9 +893,14 @@ def run_backtest_grid_for_model(args: argparse.Namespace, task: TrainedModelTask
             evaluation = evaluate_one_backtest(bt_args.config, base_overrides, bt_params, preloaded_data)
             consume_evaluation(bt_idx, evaluation)
     else:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as executor:
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=jobs,
+            mp_context=mp.get_context("spawn"),
+            initializer=_backtest_worker_init,
+            initargs=(bt_args.config, base_overrides),
+        ) as executor:
             futures = {
-                executor.submit(evaluate_one_backtest, bt_args.config, base_overrides, bt_params, preloaded_data): bt_params
+                executor.submit(_backtest_evaluate_one, bt_params): bt_params
                 for bt_params in pending_grid
             }
             for bt_idx, future in enumerate(concurrent.futures.as_completed(futures), start=1):
@@ -877,6 +1127,10 @@ def main() -> dict[str, Any]:
     log_file, original_stdout, original_stderr = setup_logging(log_file_path)
     started_at = datetime.now().isoformat(timespec="seconds")
     model_grid = build_model_grid(args)
+    if args.random_search and args.random_search > 0:
+        full_size = len(model_grid)
+        model_grid = sample_model_grid(model_grid, args.random_search, args.random_seed)
+        logging.info("随机采样: 全网格 %s 个点，采样 %s 个点 (seed=%s)", full_size, len(model_grid), args.random_seed)
     task_queue: queue.Queue[Any] = queue.Queue(maxsize=1)
     results: list[dict[str, Any]] = []
 
@@ -887,6 +1141,9 @@ def main() -> dict[str, Any]:
         logging.info("日志目录: %s", log_dir)
         logging.info("日志文件: %s", log_file_path)
         logging.info("XGBoost 网格大小: %s", len(model_grid))
+        logging.info("训练并行进程数 (train_workers): %s", resolve_train_workers(args.train_workers))
+        logging.info("单模型 XGBoost 线程数 (xgb_n_jobs): %s", args.xgb_n_jobs if args.xgb_n_jobs > 0 else "使用 trainer config 中的值")
+        logging.info("单模型回测并行进程数 (jobs): %s", args.jobs)
         logging.info("XGBoost 网格明细: %s", model_grid)
 
         trainer_thread = threading.Thread(target=train_worker, args=(args, model_grid, task_queue), name="xgb-train-worker")

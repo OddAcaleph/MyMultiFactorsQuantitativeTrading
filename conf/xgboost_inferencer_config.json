@@ -1,8 +1,8 @@
 {
-  "trainer_config_path": "/opt/tiger/qyd/qyd/conf/xgboost_trainer_config.json",
-  "loader_config_path": "/opt/tiger/qyd/qyd/conf/parquet_loader_config.json",
-  "model_path": "/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/models/xgboost_model_0622.json",
-  "output_dir": "/opt/tiger/qyd/qyd/outputs/xgb_cross_sectional_dataset",
+  "trainer_config_path": "${PROJECT_ROOT}/conf/xgboost_trainer_config.json",
+  "loader_config_path": "${PROJECT_ROOT}/conf/parquet_loader_config.json",
+  "model_path": "${PROJECT_ROOT}/models/xgboost_label_5d.json",
+  "output_dir": "${PROJECT_ROOT}/outputs/xgb_cross_sectional_dataset",
   "segment": "test",
   "start_time": "2026-06-01",
   "end_time": "2026-06-23",

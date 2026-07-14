@@ -1,8 +1,8 @@
 {
-  "trainer_config_path": "/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/conf/xgboost_trainer_config.json",
-  "prediction_path": "/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/outputs/xgb_cross_sectional_dataset/pred_test.parquet",
-  "label_path": "/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/data/generated_label/daily_labels",
-  "output_dir": "/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/outputs/preparatory_backtest/0610_4",
+  "trainer_config_path": "${PROJECT_ROOT}/conf/xgboost_trainer_config.json",
+  "prediction_path": "${PROJECT_ROOT}/outputs/xgb_cross_sectional_dataset/pred_test.parquet",
+  "label_path": "${PROJECT_ROOT}/data/generated_label/daily_labels",
+  "output_dir": "${PROJECT_ROOT}/outputs/preparatory_backtest/0610_4",
   "start_time": "2023-01-01",
   "end_time": "2025-12-31",
   "account": 1000000.0,

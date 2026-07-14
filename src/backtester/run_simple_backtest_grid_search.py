@@ -40,17 +40,8 @@ except ImportError:  # pragma: no cover - supports running this file directly.
     from backtester.simple_backtester import SimpleBacktester
 
 
-def expand_project_path(value: str) -> str:
-    """Expand project-root placeholders used by grid-search config files."""
-
-    return value.replace("${PROJECT_ROOT}", str(PROJECT_ROOT))
-
-
 def load_grid_search_defaults(config_path: str | Path | None = None) -> dict[str, Any]:
-    defaults = load_simple_backtest_grid_search_config(config_path)
-    if "output_root" in defaults and defaults["output_root"] is not None:
-        defaults["output_root"] = expand_project_path(str(defaults["output_root"]))
-    return defaults
+    return load_simple_backtest_grid_search_config(config_path)
 
 
 _DEFAULT_GRID_SEARCH_CONFIG = load_grid_search_defaults()

@@ -19,9 +19,36 @@ DEFAULT_INFERENCER_CONFIG_PATH = CONF_DIR / "xgboost_inferencer_config.json"
 DEFAULT_XGBOOST_TRAIN_BACKTEST_GRID_SEARCH_CONFIG_PATH = CONF_DIR / "xgboost_train_backtest_grid_search_config.json"
 DEFAULT_CONFIG_PATH = DEFAULT_TRAINER_CONFIG_PATH
 
+_PROJECT_ROOT_VAR = "${PROJECT_ROOT}"
+
+
+def resolve_path(value: str, base: Path = PROJECT_ROOT) -> Path:
+    """Resolve a config path value.
+
+    Supports ``${PROJECT_ROOT}`` placeholder and relative paths (resolved
+    against *base*, defaulting to the project root). Absolute paths are
+    returned unchanged.
+    """
+    expanded = value.replace(_PROJECT_ROOT_VAR, str(PROJECT_ROOT))
+    p = Path(expanded)
+    if p.is_absolute():
+        return p
+    return (base / p).resolve()
+
+
+def _expand_project_root(obj: Any) -> Any:
+    """Recursively expand ``${PROJECT_ROOT}`` in all string values."""
+    if isinstance(obj, Mapping):
+        return {k: _expand_project_root(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_expand_project_root(item) for item in obj]
+    if isinstance(obj, str) and _PROJECT_ROOT_VAR in obj:
+        return obj.replace(_PROJECT_ROOT_VAR, str(PROJECT_ROOT))
+    return obj
+
 
 def load_config(config_path: str | Path) -> dict[str, Any]:
-    """Load JSON config from disk.
+    """Load JSON config from disk and expand ``${PROJECT_ROOT}`` placeholders.
 
     Parameters
     ----------
@@ -34,7 +61,9 @@ def load_config(config_path: str | Path) -> dict[str, Any]:
         raise FileNotFoundError(f"Config file does not exist: {path}")
 
     with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
+        config = json.load(f)
+
+    return _expand_project_root(config)
 
 
 def load_loader_config(config_path: str | Path | None = None) -> dict[str, Any]:
@@ -114,4 +143,5 @@ __all__ = [
     "load_simple_backtest_grid_search_config",
     "load_trainer_config",
     "load_xgboost_train_backtest_grid_search_config",
+    "resolve_path",
 ]

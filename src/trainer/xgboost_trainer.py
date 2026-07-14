@@ -197,6 +197,11 @@ class XGBoostTrainer:
         x_train, y_train = self.prepare_xy("train")
         x_valid, y_valid = self.prepare_xy("valid")
 
+        # 释放 dataset/handler/loader 中的大对象，节省训练期间内存
+        self.dataset = None
+        self.handler = None
+        self.loader = None
+
         fit_attempts = []
         if self.prefer_gpu and self._gpu_available():
             fit_attempts.append(("gpu", self._model_params_for_device("gpu")))
@@ -213,6 +218,7 @@ class XGBoostTrainer:
                     verbose=verbose,
                 )
                 self.device_used = device_name
+                del x_train, y_train, x_valid, y_valid
                 return self.model
             except Exception as exc:
                 last_error = exc
