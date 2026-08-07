@@ -145,12 +145,21 @@ class ParquetLoader(DataLoader):
         "revenue_yoy_ind_neutral_cc_processed",
     )
 
+    ENHANCED_ALPHA_FEATURE_COLS: tuple[str, ...] = (
+        "macd_cc_processed",
+        "rsi_14_cc_processed",
+        "momentum_52w_high_dist_cc_processed",
+        "gross_margin_change_cc_processed",
+        "revenue_yoy_acceleration_cc_processed",
+    )
+
     DEFAULT_FEATURE_COLS: tuple[str, ...] = (
         *MAIN_FEATURE_COLS,
         *PRICE_VOLUME_FEATURE_COLS,
         *MONEYFLOW_FEATURE_COLS,
         *FUNDAMENTAL_FEATURE_COLS,
         *INDUSTRY_FEATURE_COLS,
+        *ENHANCED_ALPHA_FEATURE_COLS,
     )
 
     BASE_REQUIRED_COLS: tuple[str, ...] = (
@@ -174,6 +183,7 @@ class ParquetLoader(DataLoader):
         "moneyflow": MONEYFLOW_FEATURE_COLS,
         "fundamental": FUNDAMENTAL_FEATURE_COLS,
         "industry": INDUSTRY_FEATURE_COLS,
+        "enhanced_alpha": ENHANCED_ALPHA_FEATURE_COLS,
     }
 
     SUPPORTED_LABEL_COLS: tuple[str, ...] = (
@@ -205,6 +215,7 @@ class ParquetLoader(DataLoader):
         moneyflow_factors_dir: str | Path | None = None,
         fundamental_factors_dir: str | Path | None = None,
         industry_factors_dir: str | Path | None = None,
+        enhanced_alpha_factors_dir: str | Path | None = None,
         labels_dir: str | Path | None = None,
         config_path: str | Path | None = None,
     ) -> None:
@@ -254,6 +265,11 @@ class ParquetLoader(DataLoader):
                 industry_factors_dir
                 or loader_config.get("industry_factors_dir")
                 or self.DATA_ROOT / "industry_factors"
+            ),
+            "enhanced_alpha": Path(
+                enhanced_alpha_factors_dir
+                or loader_config.get("enhanced_alpha_factors_dir")
+                or self.DATA_ROOT / "enhanced_alpha_factors"
             ),
         }
 

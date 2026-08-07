@@ -17,6 +17,7 @@ DEFAULT_SIMPLE_BACKTESTER_CONFIG_PATH = CONF_DIR / "simple_backtester_config.jso
 DEFAULT_SIMPLE_BACKTEST_GRID_SEARCH_CONFIG_PATH = CONF_DIR / "simple_backtest_grid_search_config.json"
 DEFAULT_INFERENCER_CONFIG_PATH = CONF_DIR / "xgboost_inferencer_config.json"
 DEFAULT_XGBOOST_TRAIN_BACKTEST_GRID_SEARCH_CONFIG_PATH = CONF_DIR / "xgboost_train_backtest_grid_search_config.json"
+DEFAULT_WALK_FORWARD_CONFIG_PATH = CONF_DIR / "walk_forward_config.json"
 DEFAULT_CONFIG_PATH = DEFAULT_TRAINER_CONFIG_PATH
 
 _PROJECT_ROOT_VAR = "${PROJECT_ROOT}"
@@ -106,6 +107,12 @@ def load_xgboost_train_backtest_grid_search_config(config_path: str | Path | Non
     """Load the default or user-specified XGBoost train+backtest grid-search config."""
 
     return load_config(config_path or DEFAULT_XGBOOST_TRAIN_BACKTEST_GRID_SEARCH_CONFIG_PATH)
+
+
+def load_walk_forward_config(config_path: str | Path | None = None) -> dict[str, Any]:
+    """Load the default or user-specified walk-forward config."""
+
+    return load_config(config_path or DEFAULT_WALK_FORWARD_CONFIG_PATH)
 
 
 def deep_merge(base: Mapping[str, Any], override: Mapping[str, Any] | None = None) -> dict[str, Any]:

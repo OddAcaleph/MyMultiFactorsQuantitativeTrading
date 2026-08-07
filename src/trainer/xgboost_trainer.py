@@ -46,6 +46,7 @@ class XGBoostTrainer:
         moneyflow_factors_dir: str | Path | None = None,
         fundamental_factors_dir: str | Path | None = None,
         industry_factors_dir: str | Path | None = None,
+        enhanced_alpha_factors_dir: str | Path | None = None,
         labels_dir: str | Path | None = None,
         prefer_gpu: bool | None = None,
         model_dir: str | Path | None = None,
@@ -86,6 +87,7 @@ class XGBoostTrainer:
         self.moneyflow_factors_dir = moneyflow_factors_dir or self.loader_config.get("moneyflow_factors_dir")
         self.fundamental_factors_dir = fundamental_factors_dir or self.loader_config.get("fundamental_factors_dir")
         self.industry_factors_dir = industry_factors_dir or self.loader_config.get("industry_factors_dir")
+        self.enhanced_alpha_factors_dir = enhanced_alpha_factors_dir or self.loader_config.get("enhanced_alpha_factors_dir")
         self.labels_dir = labels_dir or self.loader_config.get("labels_dir")
 
         self.segments = self._normalize_segments(segments or trainer_config.get("segments"))
@@ -131,6 +133,7 @@ class XGBoostTrainer:
             moneyflow_factors_dir=self.moneyflow_factors_dir,
             fundamental_factors_dir=self.fundamental_factors_dir,
             industry_factors_dir=self.industry_factors_dir,
+            enhanced_alpha_factors_dir=self.enhanced_alpha_factors_dir,
             labels_dir=self.labels_dir,
             feature_cols=self.feature_cols,
             label_horizon=self.label_horizon,

@@ -374,11 +374,22 @@ def build_trained_model_task_from_metadata(metadata_path: Path, idx: int, total:
     if grid_params_key(metadata.get("grid_params", {})) != grid_params_key(params):
         return None
 
+    model_dir = metadata_path.parent
+    candidate_model = model_dir / "xgboost_model.json"
+    candidate_pred = model_dir / "train_outputs" / "pred_test.parquet"
+    candidate_train_output = model_dir / "train_outputs"
+
     model_path = Path(metadata.get("model_path", ""))
     prediction_path = Path(metadata.get("prediction_path", ""))
     train_output_dir = Path(metadata.get("train_output_dir", prediction_path.parent if str(prediction_path) else ""))
+
     if not is_nonempty_file(model_path) or not is_nonempty_file(prediction_path):
-        return None
+        if is_nonempty_file(candidate_model) and is_nonempty_file(candidate_pred):
+            model_path = candidate_model
+            prediction_path = candidate_pred
+            train_output_dir = candidate_train_output
+        else:
+            return None
 
     metrics = metadata.get("metrics", {})
     metrics_path = train_output_dir / "metrics.json"

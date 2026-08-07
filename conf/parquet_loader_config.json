@@ -4,6 +4,7 @@
   "moneyflow_factors_dir": "${PROJECT_ROOT}/data/cross_sectional_processd_data/moneyflow_factors",
   "fundamental_factors_dir": "${PROJECT_ROOT}/data/cross_sectional_processd_data/fundamental_factors",
   "industry_factors_dir": "${PROJECT_ROOT}/data/cross_sectional_processd_data/industry_factors",
+  "enhanced_alpha_factors_dir": "${PROJECT_ROOT}/data/cross_sectional_processd_data/enhanced_alpha_factors",
   "labels_dir": "${PROJECT_ROOT}/data/generated_label/daily_labels",
   "feature_cols": [
     "open",
@@ -66,7 +67,12 @@
     "relative_strength_20_cc_processed",
     "roe_ind_neutral_cc_processed",
     "roa_ind_neutral_cc_processed",
-    "revenue_yoy_ind_neutral_cc_processed"
+    "revenue_yoy_ind_neutral_cc_processed",
+    "macd_cc_processed",
+    "rsi_14_cc_processed",
+    "momentum_52w_high_dist_cc_processed",
+    "gross_margin_change_cc_processed",
+    "revenue_yoy_acceleration_cc_processed"
   ],
   "label_name": "label_5d",
   "include_label": true,
