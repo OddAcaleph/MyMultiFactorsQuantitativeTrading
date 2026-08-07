@@ -1,0 +1,27 @@
+{
+  "loader_config_path": "${PROJECT_ROOT}/conf/parquet_loader_config.json",
+  "instruments": "all",
+  "start_time": "2000-01-01",
+  "end_time": "2025-12-31",
+  "output_dir": "${PROJECT_ROOT}/outputs/xgb_enhanced_alpha",
+  "model_dir": "${PROJECT_ROOT}/models",
+  "model_filename": "xgboost_label_rank_20d_enhanced_alpha.json",
+  "label_name": "label_rank_20d",
+  "prefer_gpu": false,
+  "segments": {
+    "train": ["2000-01-01", "2020-12-31"],
+    "valid": ["2021-01-01", "2022-12-31"],
+    "test": ["2023-01-01", "2025-12-31"]
+  },
+  "model_params": {
+    "n_estimators": 100,
+    "max_depth": 8,
+    "learning_rate": 0.003,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "objective": "reg:squarederror",
+    "tree_method": "hist",
+    "random_state": 42,
+    "n_jobs": 16
+  }
+}
