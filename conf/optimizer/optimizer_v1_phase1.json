@@ -1,0 +1,46 @@
+{
+  "version": "optimizer_v1_phase1",
+  "description": "Portfolio Optimizer V1 Phase 1 — MVP (Alpha + Risk + basic constraints)",
+
+  "alpha": {
+    "method": "zscore",
+    "winsorize": true,
+    "winsorize_quantile": 0.01
+  },
+
+  "candidate_pool": {
+    "pool_size": 100,
+    "min_avg_amount_20d": 5000,
+    "filter_st": true,
+    "filter_suspend": true,
+    "filter_new_stock_days": 60
+  },
+
+  "objective": {
+    "risk_aversion": 0.1,
+    "turnover_penalty": 0.0
+  },
+
+  "constraints": {
+    "long_only": true,
+    "fully_invested": true,
+    "max_weight": 0.03
+  },
+
+  "solver": {
+    "solver": "OSQP",
+    "max_iter": 4000,
+    "eps_abs": 1e-6,
+    "eps_rel": 1e-6,
+    "warm_start": true,
+    "verbose": false
+  },
+
+  "risk_model": {
+    "output_dir": "${PROJECT_ROOT}/outputs/risk_model/v1"
+  },
+
+  "output": {
+    "base_dir": "${PROJECT_ROOT}/outputs/optimizer/v1"
+  }
+}
