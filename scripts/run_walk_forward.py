@@ -187,7 +187,6 @@ def train_one_window(
         model_params=model_params,
         model_path=str(model_path),
     )
-    trainer.build_dataset()
     trainer.fit(verbose=verbose)
     trainer.save_model()
 

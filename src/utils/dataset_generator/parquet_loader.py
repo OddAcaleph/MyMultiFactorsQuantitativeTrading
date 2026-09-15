@@ -146,11 +146,129 @@ class ParquetLoader(DataLoader):
     )
 
     ENHANCED_ALPHA_FEATURE_COLS: tuple[str, ...] = (
-        "macd_cc_processed",
-        "rsi_14_cc_processed",
+        "momentum_12m_skip1m_cc_processed",
+        "momentum_6m_skip2w_cc_processed",
         "momentum_52w_high_dist_cc_processed",
-        "gross_margin_change_cc_processed",
+        "momentum_52w_high_break_cc_processed",
+        "rsi_14_cc_processed",
+        "williams_r_14_cc_processed",
+        "macd_cc_processed",
+        "macd_signal_cc_processed",
+        "macd_hist_cc_processed",
+        "consecutive_up_days_cc_processed",
+        "consecutive_down_days_cc_processed",
+        "obv_cc_processed",
+        "obv_ma5_ratio_cc_processed",
+        "volume_price_trend_cc_processed",
+        "volume_momentum_cc_processed",
+        "main_net_momentum_5d_cc_processed",
+        "main_net_trend_20d_cc_processed",
+        "price_mf_divergence_cc_processed",
+        "roe_qoq_change_cc_processed",
         "revenue_yoy_acceleration_cc_processed",
+        "gross_margin_change_cc_processed",
+        "amihud_20_cc_processed",
+        "turnover_vol_20_cc_processed",
+        "downside_vol_20_cc_processed",
+        "max_drawdown_60_cc_processed",
+        "bollinger_width_20_cc_processed",
+        "bollinger_position_20_cc_processed",
+        "atr_14_cc_processed",
+        "price_position_20_cc_processed",
+        "price_position_60_cc_processed",
+        "ret_skew_20_cc_processed",
+        "ret_kurt_60_cc_processed",
+        "kdj_k_cc_processed",
+        "kdj_d_cc_processed",
+        "kdj_j_cc_processed",
+        "cci_20_cc_processed",
+        "up_down_volume_ratio_20_cc_processed",
+        "volume_price_divergence_20_cc_processed",
+        "main_net_ema_20_cc_processed",
+        "main_net_ema_slope_20_cc_processed",
+        "main_net_consecutive_cc_processed",
+        "main_net_amount_ratio_20_cc_processed",
+        "industry_rank_ret_20_cc_processed",
+        "industry_vol_20_cc_processed",
+        "momentum_volume_interaction_cc_processed",
+        "roe_growth_interaction_cc_processed",
+        "accruals_ratio_cc_processed",
+        "ocf_to_profit_cc_processed",
+        "gross_profitability_cc_processed",
+        "asset_turnover_cc_processed",
+        "interest_coverage_cc_processed",
+        "net_operating_assets_cc_processed",
+        "roe_stability_8q_cc_processed",
+        "earnings_growth_stability_cc_processed",
+        "profit_margin_change_cc_processed",
+        "roic_change_cc_processed",
+        # New quality factors
+        "current_ratio_cc_processed",
+        "quick_ratio_cc_processed",
+        "debt_to_equity_cc_processed",
+        "ocf_to_debt_cc_processed",
+        "ebitda_to_debt_cc_processed",
+        "roic_level_cc_processed",
+        "roe_yearly_cc_processed",
+        "roa_yearly_cc_processed",
+        "cash_to_liqdebt_cc_processed",
+        "tangible_asset_ratio_cc_processed",
+        "operating_leverage_cc_processed",
+        "financial_leverage_cc_processed",
+        # Value
+        "ep_ratio_cc_processed",
+        "bp_ratio_cc_processed",
+        "sp_ratio_cc_processed",
+        "cfp_ratio_cc_processed",
+        "dividend_yield_approx_cc_processed",
+        # Piotroski F-score
+        "piotroski_f_score_cc_processed",
+        "f_profitability_cc_processed",
+        "f_leverage_liquidity_cc_processed",
+        "f_efficiency_cc_processed",
+        # Growth factors (new)
+        "op_yoy_cc_processed",
+        "netprofit_yoy_cc_processed",
+        "roe_yoy_cc_processed",
+        "bps_yoy_cc_processed",
+        "assets_yoy_cc_processed",
+        "equity_yoy_cc_processed",
+        "basic_eps_yoy_cc_processed",
+        "cfps_yoy_cc_processed",
+        "revenue_acceleration_2q_cc_processed",
+        "profit_acceleration_2q_cc_processed",
+        "roe_momentum_4q_cc_processed",
+        "earnings_surprise_qoq_cc_processed",
+        # Moneyflow depth factors (new)
+        "lg_net_ratio_cc_processed",
+        "elg_net_ratio_cc_processed",
+        "retail_net_ratio_cc_processed",
+        "sm_net_ratio_cc_processed",
+        "md_net_ratio_cc_processed",
+        "main_retail_ratio_20_cc_processed",
+        "lg_elg_ratio_20_cc_processed",
+        "moneyflow_strength_5_cc_processed",
+        "moneyflow_dispersion_20_cc_processed",
+        "net_mf_amount_ratio_cc_processed",
+        "net_mf_vol_ratio_cc_processed",
+        "buy_pressure_5_cc_processed",
+        "sell_pressure_5_cc_processed",
+        # Industry depth factors (new)
+        "industry_rank_roe_cc_processed",
+        "industry_rank_gross_margin_cc_processed",
+        "industry_rank_roic_cc_processed",
+        "industry_rank_netprofit_yoy_cc_processed",
+        "industry_rank_turn_days_cc_processed",
+        "industry_momentum_5_cc_processed",
+        "industry_momentum_20_cc_processed",
+        "relative_momentum_20_cc_processed",
+        "industry_concentration_cc_processed",
+        # Sentiment proxy factors (new)
+        "rd_intensity_cc_processed",
+        "rd_growth_cc_processed",
+        "earnings_quality_composite_cc_processed",
+        "profit_consistency_cc_processed",
+        "dividend_payout_approx_cc_processed",
     )
 
     DEFAULT_FEATURE_COLS: tuple[str, ...] = (
@@ -409,7 +527,10 @@ class ParquetLoader(DataLoader):
         self._validate_dataset_columns(data_dir, dataset.schema.names, columns)
         filter_expr = self._build_arrow_date_filter(dataset.schema, start_time=start_time, end_time=end_time)
         table = dataset.to_table(columns=list(columns), filter=filter_expr)
-        return table.to_pandas()
+        df = table.to_pandas()
+        float_cols = df.select_dtypes(include="float").columns
+        df[float_cols] = df[float_cols].astype("float32")
+        return df
 
     @staticmethod
     def _validate_dataset_columns(data_dir: Path, available_cols: Sequence[str], required_cols: Sequence[str]) -> None:
@@ -426,11 +547,20 @@ class ParquetLoader(DataLoader):
             date_str = pd.Timestamp(value).strftime("%Y%m%d")
             return int(date_str) if use_int_date else date_str
 
+        has_year = "year" in schema.names
+        has_month = "month" in schema.names
+
         expr = None
         if start_time is not None:
+            start_ts = pd.Timestamp(start_time)
             expr = ds.field("trade_date") >= convert_date(start_time)
+            if has_year:
+                expr = expr & (ds.field("year") >= start_ts.year)
         if end_time is not None:
+            end_ts = pd.Timestamp(end_time)
             end_expr = ds.field("trade_date") <= convert_date(end_time)
+            if has_year:
+                end_expr = end_expr & (ds.field("year") <= end_ts.year)
             expr = end_expr if expr is None else expr & end_expr
         return expr
 

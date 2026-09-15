@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from qlib.data.dataset import DatasetH
 from qlib.data.dataset.handler import DataHandlerLP
-from xgboost import XGBRegressor
+from xgboost import XGBRanker, XGBRegressor
 
 from utils import ParquetLoader, load_inferencer_config, load_loader_config, load_trainer_config
 
@@ -123,8 +123,13 @@ class XGBoostInferencer:
     def load_model(self) -> XGBRegressor:
         if not self.model_path.exists():
             raise FileNotFoundError(f"Model file does not exist: {self.model_path}")
-        self.model = XGBRegressor()
-        self.model.load_model(str(self.model_path))
+        # Try XGBRegressor first, fall back to XGBRanker for ranking objectives
+        try:
+            self.model = XGBRegressor()
+            self.model.load_model(str(self.model_path))
+        except TypeError:
+            self.model = XGBRanker()
+            self.model.load_model(str(self.model_path))
         self.model.set_params(device="cuda" if self.prefer_gpu and self._gpu_available() else "cpu")
         return self.model
 
@@ -134,12 +139,34 @@ class XGBoostInferencer:
         assert self.dataset is not None
         return self.dataset.prepare(self.segment)
 
+    def prepare_xy(self) -> tuple[pd.DataFrame, pd.Series | None]:
+        """Load features directly from ParquetLoader to save memory."""
+        if self.loader is None:
+            self.loader = ParquetLoader(
+                daily_bars_dir=self.loader_config.get("daily_bars_dir"),
+                price_volume_factors_dir=self.loader_config.get("price_volume_factors_dir"),
+                moneyflow_factors_dir=self.loader_config.get("moneyflow_factors_dir"),
+                fundamental_factors_dir=self.loader_config.get("fundamental_factors_dir"),
+                industry_factors_dir=self.loader_config.get("industry_factors_dir"),
+                enhanced_alpha_factors_dir=self.loader_config.get("enhanced_alpha_factors_dir"),
+                labels_dir=self.loader_config.get("labels_dir"),
+                feature_cols=self.feature_cols,
+                label_horizon=self.loader_config.get("label_horizon", 1),
+                label_name=self.label_name,
+                label_cols=self.label_cols,
+                include_label=self.include_label,
+                dropna_label=self.include_label,
+                keep_original_code=self.loader_config.get("keep_original_code", True),
+                config_path=self.loader_config_path,
+            )
+        df = self.loader.load(self.instruments, start_time=self.start_time, end_time=self.end_time)
+        return self.split_feature_label(df, label_name=self.label_name, include_label=self.include_label)
+
     def predict(self, save: bool = False) -> pd.DataFrame:
         if self.model is None:
             self.load_model()
         assert self.model is not None
-        df = self.prepare_segment()
-        x, y = self.split_feature_label(df, label_name=self.label_name, include_label=self.include_label)
+        x, y = self.prepare_xy()
         pred = self.model.predict(x)
         out = pd.DataFrame({self.prediction_col: pred}, index=x.index)
         if y is not None:

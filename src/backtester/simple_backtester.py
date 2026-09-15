@@ -103,6 +103,9 @@ class SimpleBacktester:
         self.industry_stratified = bool(self.strategy_config.get("industry_stratified", False))
         self.industry_stratify_method = str(self.strategy_config.get("industry_stratify_method", "equal"))  # equal or proportional
 
+        # Industry-neutral scoring: z-score normalize predictions within each industry
+        self.industry_neutral = bool(self.strategy_config.get("industry_neutral", False))
+
         # Drop criteria: "score" (default) = sell lowest predicted score, "return" = sell worst holding return
         self.drop_criteria = self.strategy_config.get("drop_criteria", "score")
 
@@ -116,6 +119,11 @@ class SimpleBacktester:
         self._list_dates: dict[str, pd.Timestamp] | None = None  # instrument -> list date
         self._avg_amount_20d: pd.Series | None = None  # (datetime, instrument) -> 20d avg amount
         self._vol_series: pd.Series | None = None  # (datetime, instrument) -> rolling vol
+
+        # Score-weighted position sizing
+        self.score_weight_enabled = bool(self.strategy_config.get("score_weight_enabled", False))
+        self.score_weight_power = float(self.strategy_config.get("score_weight_power", 1.0))
+        self.score_weight_min_frac = float(self.strategy_config.get("score_weight_min_frac", 0.0))
 
         # Volatility-weighted position sizing
         self.vol_weight_enabled = bool(self.strategy_config.get("vol_weight_enabled", False))
@@ -133,6 +141,11 @@ class SimpleBacktester:
         self.dyn_pos_target_vol = float(self.strategy_config.get("dyn_pos_target_vol", 0.15))  # 15% annualized
         self.dyn_pos_vol_lookback = int(self.strategy_config.get("dyn_pos_vol_lookback", 60))  # trading days
         self.dyn_pos_vol_smooth = int(self.strategy_config.get("dyn_pos_vol_smooth", 5))  # smoothing days
+        # Trend MA method params
+        self.dyn_pos_trend_ma_days = int(self.strategy_config.get("dyn_pos_trend_ma_days", 50))  # MA window
+        self.dyn_pos_trend_bear_position = float(self.strategy_config.get("dyn_pos_trend_bear_position", 0.3))  # exposure in bear market
+        self.dyn_pos_trend_smooth = bool(self.strategy_config.get("dyn_pos_trend_smooth", False))  # smooth transition
+        self.dyn_pos_trend_smooth_band = float(self.strategy_config.get("dyn_pos_trend_smooth_band", 0.05))  # +/- band around MA
         # Dispersion method params
         self.dyn_pos_dispersion_top_frac = float(self.strategy_config.get("dyn_pos_dispersion_top_frac", 0.1))
         self.dyn_pos_dispersion_bottom_frac = float(self.strategy_config.get("dyn_pos_dispersion_bottom_frac", 0.1))
@@ -681,6 +694,19 @@ class SimpleBacktester:
                 else:
                     day_scores = pred_df.xs(signal_date, level="datetime")[[self.score_col]]
                     day_df = day_scores.join(prices, how="inner").sort_values(self.score_col, ascending=False)
+                    # Industry-neutral: z-score normalize scores within each industry
+                    if self.industry_neutral:
+                        industry_map = self._load_industry_map()
+                        if industry_map:
+                            industries = day_df.index.map(lambda x: industry_map.get(x, "unknown"))
+                            grouped = day_df[self.score_col].groupby(industries)
+                            means = grouped.transform("mean")
+                            stds = grouped.transform("std").replace(0, np.nan)
+                            neutral_scores = (day_df[self.score_col] - means) / stds.fillna(1.0)
+                            neutral_scores = neutral_scores.fillna(0.0)
+                            day_df = day_df.copy()
+                            day_df[self.score_col] = neutral_scores
+                            day_df = day_df.sort_values(self.score_col, ascending=False)
                 current_value_at_deal = cash + self._stock_value(holdings, executable_prices, last_close)
                 target_names = self._select_target_names(
                     day_df=day_df,
@@ -966,15 +992,30 @@ class SimpleBacktester:
             self._industry_map = {}
             return self._industry_map
 
-        # Find the latest year/month available
+        # Find the latest year/month/day available
         latest_df = None
         year_dirs = sorted([d for d in self.industry_data_path.glob("year=*")], reverse=True)
         for year_dir in year_dirs:
             month_dirs = sorted([d for d in year_dir.glob("month=*")], reverse=True)
             for month_dir in month_dirs:
-                df = pd.read_parquet(month_dir)
-                if "l1_name" in df.columns and "ts_code" in df.columns:
-                    latest_df = df.dropna(subset=["l1_name"])
+                files = sorted(month_dir.glob("*.parquet"), reverse=True)
+                for f in files:
+                    try:
+                        df = pd.read_parquet(f)
+                    except Exception:
+                        continue
+                    # Check for industry_* one-hot columns (L1 level)
+                    l1_cols = [c for c in df.columns if c.startswith("L1_")]
+                    if l1_cols and "ts_code" in df.columns:
+                        # Convert one-hot to industry name
+                        df = df.dropna(subset=["ts_code"])
+                        df["l1_name"] = df[l1_cols].idxmax(axis=1).str.replace("L1_", "")
+                        latest_df = df[["ts_code", "l1_name", "trade_date"]]
+                        break
+                    if "l1_name" in df.columns and "ts_code" in df.columns:
+                        latest_df = df.dropna(subset=["l1_name"])
+                        break
+                if latest_df is not None:
                     break
             if latest_df is not None:
                 break
@@ -1266,12 +1307,22 @@ class SimpleBacktester:
         - score_threshold: uses average score of top-K stocks (fixed threshold)
         - dispersion: uses top-bottom score spread as alpha-strength proxy
         - target_vol: scales position so that expected portfolio vol matches target
+        - trend_ma: benchmark MA trend filter (position = max when above MA, min when below)
+        - trend_plus_vol: combines MA trend filter with volatility targeting
         """
         if not self.dynamic_position_enabled:
             return 1.0
 
         if self.dyn_pos_method == "target_vol":
             return self._calc_target_vol_position_ratio(trade_date, benchmark_returns)
+
+        if self.dyn_pos_method == "trend_ma":
+            return self._calc_trend_ma_position_ratio(trade_date, benchmark_returns)
+
+        if self.dyn_pos_method == "trend_plus_vol":
+            trend_ratio = self._calc_trend_ma_position_ratio(trade_date, benchmark_returns)
+            vol_ratio = self._calc_target_vol_position_ratio(trade_date, benchmark_returns)
+            return trend_ratio * vol_ratio
 
         scores = day_df[self.score_col].dropna()
         if len(scores) == 0:
@@ -1325,6 +1376,58 @@ class SimpleBacktester:
         ratio = self.dyn_pos_target_vol / smoothed_vol
         ratio = max(self.dyn_pos_min_position, min(self.dyn_pos_max_position, ratio))
         return ratio
+
+    def _calc_trend_ma_position_ratio(
+        self,
+        trade_date: pd.Timestamp | None,
+        benchmark_returns: pd.Series | None,
+    ) -> float:
+        """Trend-following position sizing using benchmark moving average.
+
+        When benchmark NAV is above its MA: full position (max_position).
+        When below MA: reduced position (trend_bear_position).
+        Uses end-of-day values from previous trading day (no look-ahead).
+        """
+        if benchmark_returns is None or trade_date is None:
+            return self.dyn_pos_max_position
+
+        # Build benchmark NAV up to (but not including) trade_date
+        lookback_start = trade_date - pd.Timedelta(days=self.dyn_pos_trend_ma_days * 3)
+        mask = (benchmark_returns.index >= lookback_start) & (benchmark_returns.index < trade_date)
+        hist_rets = benchmark_returns.loc[mask].dropna()
+
+        min_periods = max(5, self.dyn_pos_trend_ma_days // 2)
+        if len(hist_rets) < min_periods:
+            return self.dyn_pos_max_position
+
+        # Compute NAV and MA
+        nav_series = (1.0 + hist_rets).cumprod()
+        ma = nav_series.rolling(self.dyn_pos_trend_ma_days, min_periods=min_periods).mean()
+
+        if len(ma) == 0 or pd.isna(ma.iloc[-1]):
+            return self.dyn_pos_max_position
+
+        # Trend signal: current NAV vs MA
+        nav = nav_series.iloc[-1]
+        ma_val = ma.iloc[-1]
+
+        if not self.dyn_pos_trend_smooth:
+            if nav > ma_val:
+                return self.dyn_pos_max_position
+            else:
+                return self.dyn_pos_trend_bear_position
+
+        # Smooth transition: linear interpolation within +/- band around MA
+        band = self.dyn_pos_trend_smooth_band
+        upper = ma_val * (1.0 + band)
+        lower = ma_val * (1.0 - band)
+        if nav >= upper:
+            return self.dyn_pos_max_position
+        if nav <= lower:
+            return self.dyn_pos_trend_bear_position
+        ratio = (nav - lower) / (upper - lower)
+        pos = self.dyn_pos_trend_bear_position + ratio * (self.dyn_pos_max_position - self.dyn_pos_trend_bear_position)
+        return max(self.dyn_pos_min_position, min(self.dyn_pos_max_position, pos))
 
     def _calc_score_threshold_position_ratio(self, scores: pd.Series) -> float:
         n_top = max(1, int(len(scores) * self.dyn_pos_topk_fraction))
@@ -1428,13 +1531,37 @@ class SimpleBacktester:
     ) -> dict[str, float]:
         """Compute per-instrument target weights.
 
-        Returns equal weights if vol weighting is disabled.
-        When enabled, uses inverse-volatility weighting: w_i = (1/vol_i)^power / sum.
-        Volatility is pre-computed as rolling std of daily returns and looked up
-        from ``self._vol_series`` for O(1) access per stock.
+        Priority: score-weighted > vol-weighted > equal weight.
+        Score-weighted: w_i = (score_i - min_score + eps)^power / sum
+        Vol-weighted: w_i = (1/vol_i)^power / sum
         """
         if not target_names:
             return {}
+
+        # Score-weighted sizing
+        if self.score_weight_enabled and self.score_col in day_df.columns:
+            scores = []
+            for name in target_names:
+                try:
+                    s = float(day_df.loc[name, self.score_col])
+                    if s != s:
+                        s = 0.5
+                except (KeyError, ValueError):
+                    s = 0.5
+                scores.append(s)
+            scores_arr = np.array(scores)
+            min_s = scores_arr.min()
+            max_s = scores_arr.max()
+            if max_s > min_s:
+                norm = (scores_arr - min_s) / (max_s - min_s)
+                # Add floor to prevent zero weights
+                norm = norm * (1.0 - self.score_weight_min_frac) + self.score_weight_min_frac
+                w = np.power(norm, self.score_weight_power)
+                w = w / w.sum()
+                return {name: float(w[i]) for i, name in enumerate(target_names)}
+            else:
+                w = 1.0 / len(target_names)
+                return {name: w for name in target_names}
 
         if not self.vol_weight_enabled:
             w = 1.0 / len(target_names)
