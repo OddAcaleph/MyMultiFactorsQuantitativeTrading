@@ -70,8 +70,49 @@ class PortfolioOptimizer:
         if current_weights is None:
             current_weights = pd.Series(dtype=float)
 
-        # Step 1: Alpha standardization
-        alpha_std = self.alpha_processor.process(alpha_raw)
+        # Step 1: Alpha standardization (with optional industry/style neutralization)
+        # Get industry map and style exposures from risk data for neutralization
+        alpha_cfg = self.config.get("alpha", {})
+        industry_map = None
+        style_exposures_df = None
+
+        if alpha_cfg.get("industry_neutral", False) or alpha_cfg.get("style_neutral_factors", []):
+            # We need risk data for neutralization; fetch for all stocks in alpha
+            try:
+                risk_data_all = self.risk_interface.get_day_risk_data(
+                    trade_date, alpha_raw.index.tolist(),
+                )
+                if alpha_cfg.get("industry_neutral", False):
+                    # Build industry map from risk data industry factor exposures
+                    ind_idx = risk_data_all.industry_factor_idx
+                    if len(ind_idx) > 0:
+                        X_ind = risk_data_all.exposures[:, ind_idx]
+                        factor_names = risk_data_all.factor_names
+                        ind_names = [factor_names[i] for i in ind_idx]
+                        # For each stock, find the industry with exposure=1
+                        ind_codes = pd.Series(index=risk_data_all.stock_codes, dtype=str)
+                        for j, name in enumerate(ind_names):
+                            mask = X_ind[:, j] > 0.5
+                            ind_codes.iloc[mask] = name
+                        industry_map = ind_codes
+
+                if alpha_cfg.get("style_neutral_factors", []):
+                    style_idx = risk_data_all.style_factor_idx
+                    factor_names = risk_data_all.factor_names
+                    style_names = [factor_names[i] for i in style_idx]
+                    style_exposures_df = pd.DataFrame(
+                        risk_data_all.exposures[:, style_idx],
+                        index=risk_data_all.stock_codes,
+                        columns=style_names,
+                    )
+            except Exception:
+                pass
+
+        alpha_std = self.alpha_processor.process(
+            alpha_raw,
+            industry_map=industry_map,
+            style_exposures=style_exposures_df,
+        )
         if len(alpha_std) == 0:
             return self._empty_result(trade_date, alpha_raw, current_weights)
 

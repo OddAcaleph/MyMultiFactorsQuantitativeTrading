@@ -106,6 +106,14 @@ class RiskInterface:
         median_sr = np.median(specific_var[specific_var > 0]) if np.any(specific_var > 0) else 0.0003
         specific_var[specific_var == 0.0] = median_sr
 
+        # Winsorize specific variance at 95th percentile to suppress outliers.
+        # Newly listed / low-data stocks can have implausibly high specific risk
+        # that distorts the optimizer (drives it into low-alpha "safe" stocks).
+        if np.any(specific_var > 0):
+            p95 = np.quantile(specific_var[specific_var > 0], 0.95)
+            if p95 > 0:
+                specific_var = np.minimum(specific_var, p95)
+
         return DayRiskData(
             trade_date=trade_date,
             stock_codes=codes,

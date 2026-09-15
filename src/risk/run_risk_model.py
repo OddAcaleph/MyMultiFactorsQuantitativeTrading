@@ -83,6 +83,7 @@ def load_wide_table(data_dir: Path, start_date: int | None, end_date: int | None
     separate data sources.
     """
 
+    import pyarrow as pa
     import pyarrow.dataset as ds
 
     dataset = ds.dataset(str(data_dir), partitioning="hive")
@@ -99,9 +100,9 @@ def load_wide_table(data_dir: Path, start_date: int | None, end_date: int | None
         "open", "high", "low", "close", "pre_close", "pct_chg", "vol", "amount",
         "roe", "roa", "or_yoy", "debt_to_assets", "gross_margin", "eps", "bps",
         "gross_margin_change", "revenue_yoy_acceleration",
-        "industry_",
+        "L1_",
     )
-    all_cols = [f.name for f in dataset.schema]
+    all_cols = [f.name for f in dataset.schema if not pa.types.is_null(f.type)]
     use_cols = []
     for col in all_cols:
         for prefix in needed_prefixes:

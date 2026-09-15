@@ -41,6 +41,7 @@ import numpy as np
 import pandas as pd
 
 from optimizer import (
+    FactorTiming,
     OptimizationDiagnostics,
     PortfolioOptimizer,
     RiskAttribution,
@@ -97,13 +98,84 @@ def parse_args() -> argparse.Namespace:
                         "Scales position up/down with cash to hit target vol. "
                         "e.g. 0.20 = target 20% annualized vol.")
 
+    # Alpha processing
+    p.add_argument("--alpha-industry-neutral", action="store_true",
+                   help="Industry-neutralize alpha scores before optimization.")
+    p.add_argument("--alpha-rank", action="store_true",
+                   help="Use rank-based alpha standardization instead of z-score.")
+    p.add_argument("--alpha-smooth-span", type=int, default=0,
+                   help="EMA smoothing span for alpha scores (per-stock, time-series). "
+                        "0 = disabled. e.g. 5 = 5-day EMA, reduces turnover.")
+
     # Rebalance
     p.add_argument("--rebalance-freq", type=int, default=5,
                    help="Rebalance every N trading days")
+    p.add_argument("--signal-delay", type=int, default=1,
+                   help="Number of days to delay signals (T-day signal -> T+delay trade). "
+                        "Default 1 = no look-ahead, realistic execution.")
+
+    # Trend MA dynamic position sizing (MA50 bear market filter)
+    p.add_argument("--trend-ma-days", type=int, default=0,
+                   help="Number of days for trend MA filter. 0 = disabled. "
+                        "e.g. 50 = MA50: if market index < MA50, reduce position to trend-ma-bear-position.")
+    p.add_argument("--trend-ma-bear-position", type=float, default=0.3,
+                   help="Position ratio when market is below trend MA (bear market). "
+                        "Default 0.3 = 30% invested, 70% cash.")
+    p.add_argument("--trend-ma-smooth", action="store_true",
+                   help="Use smooth transition around MA instead of binary on/off.")
+    p.add_argument("--trend-ma-smooth-band", type=float, default=0.05,
+                   help="Smooth band around MA (fraction of MA). Default 0.05 = +/-5%%.")
+    p.add_argument("--trend-ma2-days", type=int, default=0,
+                   help="Number of days for second (long-term) trend MA filter. 0 = disabled. "
+                        "e.g. 200 = MA200: if market below MA200, reduce to trend-ma2-bear-position.")
+    p.add_argument("--trend-ma2-bear-position", type=float, default=0.15,
+                   help="Position ratio when market is below both MA1 and MA2. "
+                        "Default 0.15 = 15% invested.")
+
+    # Strategy mode
+    p.add_argument("--strategy", type=str, default="mean_variance",
+                   choices=["mean_variance", "risk_parity"],
+                   help="Portfolio strategy: mean_variance (QP optimizer) or risk_parity.")
+
+    # Risk-parity specific parameters
+    p.add_argument("--rp-alpha-tilt", type=float, default=0.3,
+                   help="Risk-parity alpha tilt: 0=pure RP, 1=pure alpha-weighted.")
+    p.add_argument("--rp-industry-neutral-selection", action="store_true",
+                   help="Use industry-stratified stock selection in risk-parity.")
+    p.add_argument("--rp-max-weight", type=float, default=0.10,
+                   help="Max single-stock weight for risk-parity.")
+    p.add_argument("--rp-industry-max-weight", type=float, default=0.20,
+                   help="Max industry weight for risk-parity.")
 
     # Date range
     p.add_argument("--start-date", type=str, default=None, help="YYYY-MM-DD")
     p.add_argument("--end-date", type=str, default=None, help="YYYY-MM-DD")
+
+    # Factor timing (regime-based alpha scaling)
+    p.add_argument("--factor-timing", action="store_true",
+                   help="Enable factor timing (volatility regime + alpha momentum scaling).")
+    p.add_argument("--ft-vol-lookback", type=int, default=20,
+                   help="Factor timing: lookback days for volatility regime.")
+    p.add_argument("--ft-vol-low-threshold", type=float, default=0.012,
+                   help="Factor timing: low vol threshold (daily). Below = scale up.")
+    p.add_argument("--ft-vol-high-threshold", type=float, default=0.025,
+                   help="Factor timing: high vol threshold (daily). Above = scale down.")
+    p.add_argument("--ft-vol-low-scale", type=float, default=1.3,
+                   help="Factor timing: alpha scale in low-vol regime.")
+    p.add_argument("--ft-vol-high-scale", type=float, default=0.5,
+                   help="Factor timing: alpha scale in high-vol regime.")
+    p.add_argument("--ft-alpha-momentum", action="store_true",
+                   help="Factor timing: enable alpha momentum scaling.")
+    p.add_argument("--ft-alpha-mom-lookback", type=int, default=20,
+                   help="Factor timing: lookback days for alpha momentum.")
+    p.add_argument("--ft-alpha-mom-min-scale", type=float, default=0.3,
+                   help="Factor timing: min alpha scale for momentum (worst IC).")
+    p.add_argument("--ft-alpha-mom-max-scale", type=float, default=1.5,
+                   help="Factor timing: max alpha scale for momentum (best IC).")
+    p.add_argument("--ft-alpha-mom-ic-threshold", type=float, default=0.0,
+                   help="Factor timing: IC threshold for normalization (IC below this = min scale).")
+    p.add_argument("--ft-alpha-mom-ic-scale", type=float, default=0.05,
+                   help="Factor timing: IC scale range (IC threshold + scale = max scale).")
 
     return p.parse_args()
 
@@ -297,6 +369,14 @@ def run_backtest(
     slippage: float = 0.0,
     board_lot: int = 0,
     target_vol: float = 0.0,
+    signal_delay: int = 1,
+    trend_ma_days: int = 0,
+    trend_ma_bear_position: float = 0.3,
+    trend_ma_smooth: bool = False,
+    trend_ma_smooth_band: float = 0.05,
+    trend_ma2_days: int = 0,
+    trend_ma2_bear_position: float = 0.15,
+    factor_timing: FactorTiming | None = None,
 ) -> dict:
     """Run optimizer backtest year by year.
 
@@ -322,13 +402,71 @@ def run_backtest(
     if end_date:
         all_dates = all_dates[all_dates <= pd.to_datetime(end_date)]
 
+    # Shift predictions by signal_delay days to avoid look-ahead bias.
+    # T-day signal is generated at T close, trades execute at T+signal_delay open.
+    # We shift predictions forward so that pred.loc[dt] reflects the signal
+    # available for trading on day dt.
+    if signal_delay > 0:
+        pred_full = pred_full.copy()
+        pred_dates = pd.to_datetime(pred_full.index.get_level_values(0))
+        unique_dates = pd.Series(pred_dates.unique()).sort_values().reset_index(drop=True)
+        # Build a mapping from original date -> shifted date
+        date_map = {}
+        for i, d in enumerate(unique_dates):
+            shifted_idx = i + signal_delay
+            if shifted_idx < len(unique_dates):
+                date_map[d] = unique_dates[shifted_idx]
+        # Only keep predictions that have a valid shifted date
+        mask = pred_dates.isin(date_map.keys())
+        pred_full = pred_full.loc[mask].copy()
+        # Map dates forward
+        new_dates = pred_dates[mask].map(date_map)
+        # Rebuild MultiIndex
+        instruments = pred_full.index.get_level_values(1)
+        pred_full.index = pd.MultiIndex.from_arrays(
+            [new_dates, instruments],
+            names=pred_full.index.names,
+        )
+        logger.info("Applied signal_delay=%d: predictions shifted forward by %d trading days",
+                    signal_delay, signal_delay)
+
     years = sorted(all_dates.year.unique())
     logger.info("Backtest: %s to %s, %d years, %d trading days",
                 all_dates[0].strftime('%Y-%m-%d'),
                 all_dates[-1].strftime('%Y-%m-%d'),
                 len(years), len(all_dates))
 
-    opt = PortfolioOptimizer(config, risk_interface)
+    # Build market index for trend MA filter (equal-weight cross-sectional mean return)
+    # We compute the index NAV from daily bar returns across all stocks.
+    market_nav: pd.Series | None = None
+    market_nav2: pd.Series | None = None
+    if trend_ma_days > 0 or trend_ma2_days > 0:
+        logger.info("Building market index for trend MA filter")
+        market_returns = []
+        for year in years:
+            bars_df = load_year_bars(bars_dir, year)
+            if bars_df.empty:
+                continue
+            ret_pivot = bars_df.pivot(index="trade_date", columns="ts_code", values="ret")
+            mkt_ret = ret_pivot.mean(axis=1)
+            market_returns.append(mkt_ret)
+            del bars_df, ret_pivot
+            gc.collect()
+        if market_returns:
+            mkt_ret_series = pd.concat(market_returns).sort_index()
+            mkt_ret_series.index = pd.to_datetime(mkt_ret_series.index.astype(str))
+            market_nav = (1.0 + mkt_ret_series).cumprod()
+            market_nav2 = market_nav  # same base for MA2
+            logger.info("Market index built: %d trading days", len(market_nav))
+            del mkt_ret_series
+            gc.collect()
+
+    strategy_mode = config.get("strategy", "mean_variance")
+    if strategy_mode == "risk_parity":
+        from optimizer.risk_parity_strategy import RiskParityStrategy
+        opt = RiskParityStrategy(config, risk_interface)
+    else:
+        opt = PortfolioOptimizer(config, risk_interface)
     attribution = RiskAttribution()
     diagnostics = OptimizationDiagnostics()
 
@@ -349,6 +487,9 @@ def run_backtest(
 
     n_optimized = 0
     n_skipped = 0
+
+    # Factor timing state
+    _prev_alpha_for_ft: pd.Series | None = None
 
     for year in years:
         logger.info("Processing year %d", year)
@@ -392,6 +533,12 @@ def run_backtest(
             today_ret = ret_pivot.loc[date_int]
             today_gap_ret = gap_ret_pivot.loc[date_int] if date_int in gap_ret_pivot.index else pd.Series(dtype=float)
             today_intraday_ret = intraday_ret_pivot.loc[date_int] if date_int in intraday_ret_pivot.index else pd.Series(dtype=float)
+
+            # Update factor timing with today's market return
+            if factor_timing is not None:
+                mkt_ret_today = today_ret.mean()
+                if not np.isnan(mkt_ret_today):
+                    factor_timing.update_market(mkt_ret_today)
 
             # Apply execution constraints (limit-up/down at open) before today's returns.
             # Rebalance decisions made on day t-1 close execute on day t open.
@@ -643,6 +790,17 @@ def run_backtest(
                 n_skipped += 1
                 continue
 
+            # Note: factor timing is applied as a position sizing overlay after optimization
+            # (not alpha scaling, since uniform alpha scaling doesn't change the optimal
+            # portfolio under fully-invested + long-only constraints).
+
+            # Update factor timing alpha momentum with realized returns from previous period.
+            # We use today's return as the realized forward return for the previous alpha.
+            if factor_timing is not None and factor_timing.alpha_momentum_enabled:
+                if _prev_alpha_for_ft is not None and len(today_ret) > 0:
+                    factor_timing.update_alpha_performance(_prev_alpha_for_ft, today_ret)
+                _prev_alpha_for_ft = day_pred.copy()
+
             # Build market_data for candidate pool filtering
             market_data = None
             if date_int in amt_pivot.index:
@@ -689,9 +847,14 @@ def run_backtest(
                 n_skipped += 1
                 continue
 
-            if "optimal" not in result.solver_status and "optimal_inaccurate" not in result.solver_status and "user_limit" not in result.solver_status:
-                n_skipped += 1
-                continue
+            if strategy_mode == "mean_variance":
+                if "optimal" not in result.solver_status and "optimal_inaccurate" not in result.solver_status and "user_limit" not in result.solver_status:
+                    n_skipped += 1
+                    continue
+            else:
+                if result.solver_status == "no_candidates":
+                    n_skipped += 1
+                    continue
 
             n_optimized += 1
             target_weights = result.weights
@@ -704,6 +867,48 @@ def run_backtest(
                 scale = min(1.0, target_vol_daily / result.portfolio_volatility)
                 if scale < 1.0:
                     target_weights = target_weights * scale
+
+            # Trend MA dynamic position sizing (bear market filter)
+            # If market index is below its MA, reduce position to bear_position.
+            if trend_ma_days > 0 and market_nav is not None and dt in market_nav.index:
+                idx = market_nav.index.get_loc(dt)
+                if idx >= trend_ma_days:
+                    ma_val = market_nav.iloc[idx - trend_ma_days + 1:idx + 1].mean()
+                    current_val = market_nav.iloc[idx]
+                    if trend_ma_smooth:
+                        band = ma_val * trend_ma_smooth_band
+                        if band > 0:
+                            normalized = (current_val - ma_val) / band
+                            t = max(0.0, min(1.0, (normalized + 1.0) / 2.0))
+                            trend_position = trend_ma_bear_position + (1.0 - trend_ma_bear_position) * t
+                        else:
+                            trend_position = 1.0 if current_val >= ma_val else trend_ma_bear_position
+                    else:
+                        trend_position = 1.0 if current_val >= ma_val else trend_ma_bear_position
+
+                    if trend_position < 1.0:
+                        target_weights = target_weights * trend_position
+
+            # Second (long-term) MA filter
+            if trend_ma2_days > 0 and market_nav2 is not None and dt in market_nav2.index:
+                idx = market_nav2.index.get_loc(dt)
+                if idx >= trend_ma2_days:
+                    ma2_val = market_nav2.iloc[idx - trend_ma2_days + 1:idx + 1].mean()
+                    current_val = market_nav2.iloc[idx]
+                    if current_val < ma2_val:
+                        # Additional reduction: scale to ma2_bear_position from current
+                        current_sum = target_weights.sum()
+                        if current_sum > trend_ma2_bear_position:
+                            scale = trend_ma2_bear_position / current_sum if current_sum > 0 else 0
+                            target_weights = target_weights * scale
+
+            # Factor timing: position sizing overlay
+            # Scale portfolio exposure up/down based on vol regime / alpha momentum.
+            # scale < 1 means hold cash; scale > 1 is capped at 1.0 (no leverage).
+            if factor_timing is not None:
+                ft_scale = factor_timing.get_scale(dt)
+                if ft_scale < 1.0:
+                    target_weights = target_weights * ft_scale
 
             # Risk attribution
             risk_data = risk_interface.get_day_risk_data(
@@ -871,7 +1076,11 @@ def main() -> None:
         constraints["max_vol"] = args.max_vol
 
     config = {
-        "alpha": {"method": "zscore", "winsorize": True, "winsorize_quantile": 0.01},
+        "strategy": args.strategy,
+        "alpha": {"method": "zscore", "winsorize": True, "winsorize_quantile": 0.01,
+                  "industry_neutral": args.alpha_industry_neutral,
+                  "rank": args.alpha_rank,
+                  "smooth_span": args.alpha_smooth_span},
         "candidate_pool": {
             "pool_size": args.pool_size,
             "min_avg_amount_20d": args.min_avg_amount_20d,
@@ -884,6 +1093,12 @@ def main() -> None:
             "turnover_penalty": args.turnover_penalty,
         },
         "constraints": constraints,
+        "risk_parity": {
+            "alpha_tilt": args.rp_alpha_tilt,
+            "industry_neutral_selection": args.rp_industry_neutral_selection,
+            "max_weight": args.rp_max_weight,
+            "industry_max_weight": args.rp_industry_max_weight,
+        },
         "target_vol": args.target_vol,
         "solver": {"solver": "OSQP", "verbose": False, "max_iter": 4000},
     }
@@ -891,6 +1106,27 @@ def main() -> None:
     # Save config
     with open(output_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2, default=str)
+
+    # Initialize factor timing
+    factor_timing = None
+    if args.factor_timing:
+        ft_config = {
+            "enabled": True,
+            "vol_lookback": args.ft_vol_lookback,
+            "vol_low_threshold": args.ft_vol_low_threshold,
+            "vol_high_threshold": args.ft_vol_high_threshold,
+            "vol_low_scale": args.ft_vol_low_scale,
+            "vol_high_scale": args.ft_vol_high_scale,
+            "alpha_momentum_enabled": args.ft_alpha_momentum,
+            "alpha_mom_lookback": args.ft_alpha_mom_lookback,
+            "alpha_mom_min_scale": args.ft_alpha_mom_min_scale,
+            "alpha_mom_max_scale": args.ft_alpha_mom_max_scale,
+            "alpha_mom_ic_threshold": args.ft_alpha_mom_ic_threshold,
+            "alpha_mom_ic_scale": args.ft_alpha_mom_ic_scale,
+        }
+        factor_timing = FactorTiming(ft_config)
+        logger.info("Factor timing enabled: vol_lookback=%d, low_thresh=%.4f, high_thresh=%.4f",
+                    args.ft_vol_lookback, args.ft_vol_low_threshold, args.ft_vol_high_threshold)
 
     # Load list dates for new-stock filter
     list_dates = {}
@@ -912,6 +1148,14 @@ def main() -> None:
         slippage=args.slippage,
         board_lot=args.board_lot,
         target_vol=args.target_vol,
+        signal_delay=args.signal_delay,
+        trend_ma_days=args.trend_ma_days,
+        trend_ma_bear_position=args.trend_ma_bear_position,
+        trend_ma_smooth=args.trend_ma_smooth,
+        trend_ma_smooth_band=args.trend_ma_smooth_band,
+        trend_ma2_days=args.trend_ma2_days,
+        trend_ma2_bear_position=args.trend_ma2_bear_position,
+        factor_timing=factor_timing if args.factor_timing else None,
     )
     elapsed = time.time() - t0
 
