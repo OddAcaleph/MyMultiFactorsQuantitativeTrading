@@ -212,7 +212,57 @@ class IndustryFetcher:
         retry_wait_seconds: float = 2.0,
         max_retries: int = 3,
     ) -> pd.DataFrame:
-        """Fetch industry metadata and member intervals from Tushare."""
+        """Fetch industry metadata and member intervals from Tushare.
+
+        Uses ``index_classify`` + ``index_member`` per-industry fetch as the
+        primary path, which gives full coverage (all SW2021 industries).
+        Falls back to ``index_member_all`` if per-industry fetch fails.
+        """
+
+        industry_meta = self._fetch_industry_classify(
+            level=level,
+            src=src,
+            retry_wait_seconds=retry_wait_seconds,
+            max_retries=max_retries,
+        )
+        if not industry_meta.empty:
+            self.logger.info("通过 index_classify 获取到行业数量：%d (src=%s, level=%s)", len(industry_meta), src, level)
+
+            frames: list[pd.DataFrame] = []
+            empty_count = 0
+            failed_count = 0
+            index_codes = industry_meta["index_code"].dropna().astype(str).unique()
+            for index_code in index_codes:
+                member_df = self._fetch_one_industry_member(
+                    index_code=index_code,
+                    sleep_time=sleep_time,
+                    retry_wait_seconds=retry_wait_seconds,
+                    max_retries=max_retries,
+                )
+                if member_df is not None and not member_df.empty:
+                    frames.append(member_df)
+                elif member_df is None:
+                    failed_count += 1
+                else:
+                    empty_count += 1
+
+            if frames:
+                self.logger.info(
+                    "通过 index_member 获取到非空行业数量：%d，空行业：%d，失败：%d",
+                    len(frames),
+                    empty_count,
+                    failed_count,
+                )
+                members = pd.concat(frames, ignore_index=True)
+                members = members.merge(
+                    industry_meta,
+                    on="index_code",
+                    how="left",
+                    suffixes=("", "_classify"),
+                )
+                return self._normalize_industry_members(members, src=src, level=level)
+
+        self.logger.warning("index_classify + index_member 路径未返回数据，回退到 index_member_all。")
 
         member_all = self._fetch_index_member_all(
             level=level,
@@ -224,55 +274,7 @@ class IndustryFetcher:
             self.logger.info("通过 index_member_all 获取到行业成分记录数：%d", len(member_all))
             return member_all
 
-        self.logger.warning("index_member_all 未返回行业成分，回退到 index_classify + index_member 逐行业拉取。")
-
-        industry_meta = self._fetch_industry_classify(
-            level=level,
-            src=src,
-            retry_wait_seconds=retry_wait_seconds,
-            max_retries=max_retries,
-        )
-        if industry_meta.empty:
-            return pd.DataFrame()
-        self.logger.info("通过 index_classify 获取到行业数量：%d", len(industry_meta))
-
-        frames: list[pd.DataFrame] = []
-        empty_count = 0
-        index_codes = industry_meta["index_code"].dropna().astype(str).unique()
-        for index_code in index_codes:
-            member_df = self._fetch_one_industry_member(
-                index_code=index_code,
-                sleep_time=sleep_time,
-                retry_wait_seconds=retry_wait_seconds,
-                max_retries=max_retries,
-            )
-            if member_df is not None and not member_df.empty:
-                frames.append(member_df)
-            else:
-                empty_count += 1
-
-        if not frames:
-            self.logger.warning(
-                "index_classify 返回 %d 个行业，但 index_member 全部为空；样例行业代码：%s",
-                len(index_codes),
-                list(index_codes[:10]),
-            )
-            return pd.DataFrame()
-
-        self.logger.info(
-            "通过 index_member 获取到非空行业数量：%d，空行业数量：%d",
-            len(frames),
-            empty_count,
-        )
-
-        members = pd.concat(frames, ignore_index=True)
-        members = members.merge(
-            industry_meta,
-            on="index_code",
-            how="left",
-            suffixes=("", "_classify"),
-        )
-        return self._normalize_industry_members(members, src=src, level=level)
+        return pd.DataFrame()
 
     def _fetch_index_member_all(
         self,
@@ -635,7 +637,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--http_url", type=str, default=DEFAULT_HTTP_URL, help="可选 Tushare 兼容代理地址")
     parser.add_argument("--level", type=str, default="L1", choices=["L1", "L2", "L3"], help="行业级别；默认申万一级 L1")
-    parser.add_argument("--src", type=str, default="SW", help="行业分类来源；默认 SW（申万）")
+    parser.add_argument("--src", type=str, default="SW2021", help="行业分类来源；默认 SW2021（申万2021版）")
     parser.add_argument("--sleep_time", type=float, default=0.2, help="每次成功请求后的等待秒数")
     parser.add_argument(
         "--retry_wait_seconds",
