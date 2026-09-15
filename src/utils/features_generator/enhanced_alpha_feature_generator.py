@@ -139,6 +139,25 @@ class EnhancedAlphaFactorGenerator:
     VOLATILITY_FACTORS: tuple[str, ...] = (
         "downside_vol_20",
         "max_drawdown_60",
+        "bollinger_width_20",
+        "bollinger_position_20",
+        "atr_14",
+        "price_position_20",
+        "price_position_60",
+        "ret_skew_20",
+        "ret_kurt_60",
+    )
+
+    TECHNICAL_OSCILLATOR_FACTORS: tuple[str, ...] = (
+        "kdj_k",
+        "kdj_d",
+        "kdj_j",
+        "cci_20",
+    )
+
+    VOLUME_ADVANCED_FACTORS: tuple[str, ...] = (
+        "up_down_volume_ratio_20",
+        "volume_price_divergence_20",
     )
 
     MONEYFLOW_ADVANCED_FACTORS: tuple[str, ...] = (
@@ -158,6 +177,98 @@ class EnhancedAlphaFactorGenerator:
         "roe_growth_interaction",
     )
 
+    VALUE_FACTORS: tuple[str, ...] = (
+        "ep_ratio",
+        "bp_ratio",
+        "sp_ratio",
+        "cfp_ratio",
+        "dividend_yield_approx",
+    )
+
+    PIOTROSKI_FACTORS: tuple[str, ...] = (
+        "piotroski_f_score",
+        "f_profitability",
+        "f_leverage_liquidity",
+        "f_efficiency",
+    )
+
+    QUALITY_FACTORS: tuple[str, ...] = (
+        "accruals_ratio",
+        "ocf_to_profit",
+        "gross_profitability",
+        "asset_turnover",
+        "interest_coverage",
+        "net_operating_assets",
+        "roe_stability_8q",
+        "earnings_growth_stability",
+        "profit_margin_change",
+        "roic_change",
+        # New quality factors
+        "current_ratio",
+        "quick_ratio",
+        "debt_to_equity",
+        "ocf_to_debt",
+        "ebitda_to_debt",
+        "roic_level",
+        "roe_yearly",
+        "roa_yearly",
+        "cash_to_liqdebt",
+        "tangible_asset_ratio",
+        "operating_leverage",
+        "financial_leverage",
+    )
+
+    GROWTH_FACTORS: tuple[str, ...] = (
+        "op_yoy",
+        "netprofit_yoy",
+        "roe_yoy",
+        "bps_yoy",
+        "assets_yoy",
+        "equity_yoy",
+        "basic_eps_yoy",
+        "cfps_yoy",
+        "revenue_acceleration_2q",
+        "profit_acceleration_2q",
+        "roe_momentum_4q",
+        "earnings_surprise_qoq",
+    )
+
+    MONEYFLOW_DEPTH_FACTORS: tuple[str, ...] = (
+        "lg_net_ratio",
+        "elg_net_ratio",
+        "retail_net_ratio",
+        "sm_net_ratio",
+        "md_net_ratio",
+        "main_retail_ratio_20",
+        "lg_elg_ratio_20",
+        "moneyflow_strength_5",
+        "moneyflow_dispersion_20",
+        "net_mf_amount_ratio",
+        "net_mf_vol_ratio",
+        "buy_pressure_5",
+        "sell_pressure_5",
+    )
+
+    INDUSTRY_DEPTH_FACTORS: tuple[str, ...] = (
+        "industry_rank_roe",
+        "industry_rank_gross_margin",
+        "industry_rank_roic",
+        "industry_rank_netprofit_yoy",
+        "industry_rank_turn_days",
+        "industry_momentum_5",
+        "industry_momentum_20",
+        "relative_momentum_20",
+        "industry_concentration",
+    )
+
+    SENTIMENT_PROXY_FACTORS: tuple[str, ...] = (
+        "rd_intensity",
+        "rd_growth",
+        "earnings_quality_composite",
+        "profit_consistency",
+        "dividend_payout_approx",
+    )
+
     @property
     def FACTOR_COLUMNS(self) -> tuple[str, ...]:
         return (
@@ -167,9 +278,18 @@ class EnhancedAlphaFactorGenerator:
             *self.FUNDAMENTAL_MOMENTUM_FACTORS,
             *self.LIQUIDITY_FACTORS,
             *self.VOLATILITY_FACTORS,
+            *self.TECHNICAL_OSCILLATOR_FACTORS,
+            *self.VOLUME_ADVANCED_FACTORS,
             *self.MONEYFLOW_ADVANCED_FACTORS,
             *self.INDUSTRY_RELATIVE_FACTORS,
             *self.INTERACTION_FACTORS,
+            *self.QUALITY_FACTORS,
+            *self.VALUE_FACTORS,
+            *self.PIOTROSKI_FACTORS,
+            *self.GROWTH_FACTORS,
+            *self.MONEYFLOW_DEPTH_FACTORS,
+            *self.INDUSTRY_DEPTH_FACTORS,
+            *self.SENTIMENT_PROXY_FACTORS,
         )
 
     def __init__(
@@ -283,6 +403,8 @@ class EnhancedAlphaFactorGenerator:
             factor_df = self._generate_volume_price_factors(factor_df)
             factor_df = self._generate_liquidity_factors(factor_df)
             factor_df = self._generate_volatility_factors(factor_df)
+            factor_df = self._generate_technical_oscillator_factors(factor_df)
+            factor_df = self._generate_volume_advanced_factors(factor_df)
 
             # Moneyflow factors
             if mf_df_full is not None:
@@ -292,25 +414,42 @@ class EnhancedAlphaFactorGenerator:
                 batch_mf["amount_wan"] = batch_mf["amount"] / 10.0
                 factor_df = self._generate_moneyflow_factors(factor_df, batch_mf)
                 factor_df = self._generate_moneyflow_advanced_factors(factor_df)
+                factor_df = self._generate_moneyflow_depth_factors(factor_df, batch_mf)
                 del batch_mf, bars_amount
             else:
-                for col in [*self.MONEYFLOW_FACTORS, *self.MONEYFLOW_ADVANCED_FACTORS]:
+                for col in [*self.MONEYFLOW_FACTORS, *self.MONEYFLOW_ADVANCED_FACTORS, *self.MONEYFLOW_DEPTH_FACTORS]:
                     factor_df[col] = np.nan
 
             # Fundamental momentum factors
             if fund_df_full is not None:
                 factor_df = self._generate_fundamental_momentum_factors(factor_df, fund_df_full, bars_df)
+                factor_df = self._generate_quality_factors(factor_df, fund_df_full)
+                factor_df = self._generate_value_factors(factor_df, fund_df_full, bars_df)
+                factor_df = self._generate_piotroski_factors(factor_df, fund_df_full)
+                factor_df = self._generate_growth_factors(factor_df, fund_df_full)
+                factor_df = self._generate_sentiment_proxy_factors(factor_df, fund_df_full)
             else:
                 for col in self.FUNDAMENTAL_MOMENTUM_FACTORS:
+                    factor_df[col] = np.nan
+                for col in self.QUALITY_FACTORS:
+                    factor_df[col] = np.nan
+                for col in self.VALUE_FACTORS:
+                    factor_df[col] = np.nan
+                for col in self.PIOTROSKI_FACTORS:
+                    factor_df[col] = np.nan
+                for col in self.GROWTH_FACTORS:
+                    factor_df[col] = np.nan
+                for col in self.SENTIMENT_PROXY_FACTORS:
                     factor_df[col] = np.nan
 
             # Industry-relative factors
             if ind_df_full is not None:
                 batch_ind = ind_df_full[ind_df_full["trade_date"].isin(factor_df["trade_date"].unique())].copy()
                 factor_df = self._generate_industry_relative_factors(factor_df, batch_ind)
+                factor_df = self._generate_industry_depth_factors(factor_df, batch_ind, fund_df_full)
                 del batch_ind
             else:
-                for col in self.INDUSTRY_RELATIVE_FACTORS:
+                for col in [*self.INDUSTRY_RELATIVE_FACTORS, *self.INDUSTRY_DEPTH_FACTORS]:
                     factor_df[col] = np.nan
 
             # Interaction factors
@@ -680,9 +819,11 @@ class EnhancedAlphaFactorGenerator:
     # Volatility factors
     # ------------------------------------------------------------------
     def _generate_volatility_factors(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Downside volatility and max drawdown."""
+        """Downside volatility, max drawdown, Bollinger Bands, ATR, price position, return distribution."""
         stock_group = df.groupby("ts_code", sort=False, group_keys=False)
         close = df["close"].astype("float64")
+        high = df["high"].astype("float64")
+        low = df["low"].astype("float64")
         pct_chg = df["pct_chg"].astype("float64") / 100.0
 
         # DownsideVol_20: std of negative returns only
@@ -698,8 +839,157 @@ class EnhancedAlphaFactorGenerator:
             lambda s: s / s.rolling(60, min_periods=30).max() - 1
         )
 
+        # Bollinger Bands (20-day, 2 std)
+        bb_mid = stock_group["close"].transform(
+            lambda s: s.rolling(20, min_periods=10).mean()
+        )
+        bb_std = stock_group["close"].transform(
+            lambda s: s.rolling(20, min_periods=10).std()
+        )
+        bb_upper = bb_mid + 2.0 * bb_std
+        bb_lower = bb_mid - 2.0 * bb_std
+        # Bollinger width: (upper - lower) / mid
+        df["bollinger_width_20"] = np.where(
+            bb_mid > 0, (bb_upper - bb_lower) / bb_mid, np.nan
+        )
+        # Bollinger position: (close - lower) / (upper - lower)
+        bb_range = bb_upper - bb_lower
+        df["bollinger_position_20"] = np.where(
+            bb_range > 0, (close - bb_lower) / bb_range, 0.5
+        )
+
+        # ATR_14: Average True Range (14-day)
+        # TR = max(high-low, |high-prev_close|, |low-prev_close|)
+        tr = pd.Series(index=df.index, dtype="float64")
+        for _, group in df.groupby("ts_code", sort=False):
+            h = group["high"].astype("float64")
+            l = group["low"].astype("float64")
+            pc = group["close"].shift(1).astype("float64")
+            tr1 = h - l
+            tr2 = (h - pc).abs()
+            tr3 = (l - pc).abs()
+            true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            atr = true_range.rolling(14, min_periods=7).mean()
+            tr.loc[group.index] = atr.values
+        df["atr_14"] = tr
+
+        # Price position in range: (close - low_n) / (high_n - low_n)
+        for n in [20, 60]:
+            high_n = stock_group["high"].transform(
+                lambda s, n=n: s.rolling(n, min_periods=n // 2).max()
+            )
+            low_n = stock_group["low"].transform(
+                lambda s, n=n: s.rolling(n, min_periods=n // 2).min()
+            )
+            rng = high_n - low_n
+            df[f"price_position_{n}"] = np.where(
+                rng > 0, (close - low_n) / rng, 0.5
+            )
+
+        # Return skewness (20-day) and kurtosis (60-day)
+        ret_skew = pd.Series(index=df.index, dtype="float64")
+        ret_kurt = pd.Series(index=df.index, dtype="float64")
+        for _, group in df.groupby("ts_code", sort=False):
+            ret = group["pct_chg"].astype("float64") / 100.0
+            ret_skew.loc[group.index] = ret.rolling(20, min_periods=10).skew().values
+            ret_kurt.loc[group.index] = ret.rolling(60, min_periods=30).kurt().values
+        df["ret_skew_20"] = ret_skew
+        df["ret_kurt_60"] = ret_kurt
+
         nan_counts = df.loc[:, list(self.VOLATILITY_FACTORS)].isna().sum().to_dict()
         self.logger.info("波动率因子计算完成：volatility_factor_nan_counts=%s", nan_counts)
+        return df
+
+    # ------------------------------------------------------------------
+    # Technical oscillator factors
+    # ------------------------------------------------------------------
+    def _generate_technical_oscillator_factors(self, df: pd.DataFrame) -> pd.DataFrame:
+        """KDJ stochastic oscillator and CCI."""
+        stock_group = df.groupby("ts_code", sort=False, group_keys=False)
+        close = df["close"].astype("float64")
+        high = df["high"].astype("float64")
+        low = df["low"].astype("float64")
+
+        # KDJ (9, 3, 3) — stochastic oscillator
+        # RSV = (close - low_9) / (high_9 - low_9) * 100
+        # K = EMA(RSV, 3), D = EMA(K, 3), J = 3*K - 2*D
+        rsv = pd.Series(index=df.index, dtype="float64")
+        kdj_k = pd.Series(index=df.index, dtype="float64")
+        kdj_d = pd.Series(index=df.index, dtype="float64")
+        kdj_j = pd.Series(index=df.index, dtype="float64")
+
+        for _, group in df.groupby("ts_code", sort=False):
+            c = group["close"].astype("float64")
+            h = group["high"].astype("float64")
+            l = group["low"].astype("float64")
+            h9 = h.rolling(9, min_periods=5).max()
+            l9 = l.rolling(9, min_periods=5).min()
+            rsv_val = (c - l9) / (h9 - l9).replace(0, np.nan) * 100.0
+            rsv_val = rsv_val.fillna(50.0)
+            k = rsv_val.ewm(alpha=1/3, adjust=False, min_periods=1).mean()
+            d = k.ewm(alpha=1/3, adjust=False, min_periods=1).mean()
+            j = 3.0 * k - 2.0 * d
+            rsv.loc[group.index] = rsv_val.values
+            kdj_k.loc[group.index] = k.values
+            kdj_d.loc[group.index] = d.values
+            kdj_j.loc[group.index] = j.values
+
+        df["kdj_k"] = kdj_k
+        df["kdj_d"] = kdj_d
+        df["kdj_j"] = kdj_j
+
+        # CCI_20: Commodity Channel Index
+        # TP = (high + low + close) / 3
+        # CCI = (TP - MA_TP_20) / (0.015 * MD_TP_20)
+        cci = pd.Series(index=df.index, dtype="float64")
+        for _, group in df.groupby("ts_code", sort=False):
+            tp = (group["high"] + group["low"] + group["close"]).astype("float64") / 3.0
+            tp_ma = tp.rolling(20, min_periods=10).mean()
+            md = tp.rolling(20, min_periods=10).apply(
+                lambda x: np.mean(np.abs(x - np.mean(x))), raw=True
+            )
+            cci_val = (tp - tp_ma) / (0.015 * md.replace(0, np.nan))
+            cci.loc[group.index] = cci_val.values
+        df["cci_20"] = cci
+
+        nan_counts = df.loc[:, list(self.TECHNICAL_OSCILLATOR_FACTORS)].isna().sum().to_dict()
+        self.logger.info("技术震荡因子计算完成：technical_oscillator_nan_counts=%s", nan_counts)
+        return df
+
+    # ------------------------------------------------------------------
+    # Volume advanced factors
+    # ------------------------------------------------------------------
+    def _generate_volume_advanced_factors(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Up-down volume ratio and volume-price divergence."""
+        stock_group = df.groupby("ts_code", sort=False, group_keys=False)
+
+        # UpDownVolumeRatio_20: sum(vol on up days) / sum(vol on down days) over 20d
+        up_vol = pd.Series(index=df.index, dtype="float64")
+        down_vol = pd.Series(index=df.index, dtype="float64")
+        for _, group in df.groupby("ts_code", sort=False):
+            ret = group["pct_chg"].astype("float64")
+            vol = group["vol"].astype("float64")
+            up_v = vol.where(ret > 0, 0.0)
+            down_v = vol.where(ret < 0, 0.0)
+            up_vol.loc[group.index] = up_v.rolling(20, min_periods=10).sum().values
+            down_vol.loc[group.index] = down_v.rolling(20, min_periods=10).sum().values
+        df["up_down_volume_ratio_20"] = np.where(
+            down_vol > 0, up_vol / down_vol, 1.0
+        )
+
+        # VolumePriceDivergence_20: correlation between price change and volume change
+        # Positive = price up with volume up (healthy), negative = divergence
+        vpd = pd.Series(index=df.index, dtype="float64")
+        for _, group in df.groupby("ts_code", sort=False):
+            ret = group["pct_chg"].astype("float64") / 100.0
+            vol_chg = group["vol"].astype("float64").pct_change()
+            # Rolling correlation
+            corr = ret.rolling(20, min_periods=10).corr(vol_chg)
+            vpd.loc[group.index] = corr.values
+        df["volume_price_divergence_20"] = vpd
+
+        nan_counts = df.loc[:, list(self.VOLUME_ADVANCED_FACTORS)].isna().sum().to_dict()
+        self.logger.info("高级量能因子计算完成：volume_advanced_nan_counts=%s", nan_counts)
         return df
 
     # ------------------------------------------------------------------
@@ -852,6 +1142,947 @@ class EnhancedAlphaFactorGenerator:
         return df
 
     # ------------------------------------------------------------------
+    # Quality factors (earnings quality, profitability, financial health)
+    # ------------------------------------------------------------------
+    def _generate_quality_factors(self, df: pd.DataFrame, fund_df: pd.DataFrame) -> pd.DataFrame:
+        """Generate quality factors from fundamental data (PIT).
+
+        Factors:
+        - accruals_ratio: balance-sheet accruals / total assets (earnings quality)
+        - ocf_to_profit: operating cash flow / net profit (earnings quality)
+        - gross_profitability: gross profit / total assets (profitability quality)
+        - asset_turnover: revenue / total assets (efficiency)
+        - interest_coverage: EBIT / interest expense (solvency quality)
+        - net_operating_assets: NOA / total assets (earnings quality / investment)
+        - roe_stability_8q: ROE stability over 8 quarters (higher = better quality)
+        - earnings_growth_stability: net profit growth stability (higher = better)
+        - profit_margin_change: net profit margin change vs 4 quarters ago
+        - roic_change: ROIC change vs 4 quarters ago
+        """
+        if fund_df.empty:
+            for col in self.QUALITY_FACTORS:
+                df[col] = np.nan
+            self.logger.warning("质量因子跳过：fund_df为空")
+            return df
+
+        fund_df = fund_df.sort_values(["ts_code", "end_date", "ann_date"]).reset_index(drop=True)
+
+        # Compute derived metrics per report
+        # Use TTM-style where possible; for quarterly data we use reported values
+        # and compute changes/differences across reports.
+
+        # Accruals ratio: (net_income - ocf) / total_assets
+        # Approximate: netprofit_margin * revenue ≈ net income (rough)
+        # Better: use ocfps * shares ≈ ocf, but we don't have shares.
+        # Use ocf_to_or (operating cash flow / operating revenue) as proxy
+        # and compute accruals as (net profit / rev) - (ocf / rev) = netprofit_margin - ocf_to_or
+        fund_df["_accruals_ratio"] = fund_df.get("netprofit_margin", 0) - fund_df.get("ocf_to_or", 0)
+
+        # OCF to profit: operating cash flow / net profit
+        # Approximate: ocf_to_or / netprofit_margin
+        npm = fund_df.get("netprofit_margin", pd.Series(0, index=fund_df.index))
+        ocf_or = fund_df.get("ocf_to_or", pd.Series(0, index=fund_df.index))
+        fund_df["ocf_to_profit"] = np.where(
+            npm.abs() > 0.001, ocf_or / npm.replace(0, np.nan), np.nan
+        )
+
+        # Gross profitability: gross margin * asset turnover
+        # gross_profitability = grossprofit_margin * assets_turn
+        gp_margin = fund_df.get("grossprofit_margin", pd.Series(0, index=fund_df.index))
+        asset_turn = fund_df.get("assets_turn", pd.Series(0, index=fund_df.index))
+        fund_df["gross_profitability"] = gp_margin * asset_turn / 100.0  # both in percent
+
+        # Asset turnover
+        fund_df["asset_turnover"] = fund_df.get("assets_turn", np.nan)
+
+        # Interest coverage: ebit / interest expense
+        # Approximate using ebit_of_gr and finaexp_of_gr
+        ebit_gr = fund_df.get("ebit_of_gr", pd.Series(0, index=fund_df.index))
+        fin_exp_gr = fund_df.get("finaexp_of_gr", pd.Series(0, index=fund_df.index))
+        fund_df["interest_coverage"] = np.where(
+            fin_exp_gr.abs() > 0.001, ebit_gr / fin_exp_gr.replace(0, np.nan), np.nan
+        )
+
+        # Net operating assets: (total assets - cash - financial liabilities) / total assets
+        # Approximate: 1 - cash_ratio*current_ratio/100 - debt_to_assets/100
+        # Rough proxy using debt_to_assets
+        debt_to_assets = fund_df.get("debt_to_assets", pd.Series(0, index=fund_df.index))
+        fund_df["net_operating_assets"] = 1.0 - debt_to_assets / 100.0
+
+        # ROE stability: inverse of std of ROE over last 8 quarters
+        # Higher = more stable = better quality
+        roe_stab = pd.Series(index=fund_df.index, dtype="float64")
+        for ts, grp in fund_df.groupby("ts_code", sort=False):
+            roe_vals = grp["roe"].astype("float64")
+            # Rolling std over 8 quarters, then stability = 1 / (1 + std)
+            rolling_std = roe_vals.rolling(8, min_periods=4).std()
+            roe_stab.loc[grp.index] = (1.0 / (1.0 + rolling_std.abs())).values
+        fund_df["roe_stability_8q"] = roe_stab
+
+        # Earnings growth stability: stability of net profit YoY growth
+        if "netprofit_yoy" in fund_df.columns:
+            eg_stab = pd.Series(index=fund_df.index, dtype="float64")
+            for ts, grp in fund_df.groupby("ts_code", sort=False):
+                growth = grp["netprofit_yoy"].astype("float64")
+                rolling_std = growth.rolling(8, min_periods=4).std()
+                eg_stab.loc[grp.index] = (1.0 / (1.0 + rolling_std.abs())).values
+            fund_df["earnings_growth_stability"] = eg_stab
+        else:
+            fund_df["earnings_growth_stability"] = np.nan
+
+        # Profit margin change: netprofit_margin change vs 4 quarters ago
+        if "netprofit_margin" in fund_df.columns:
+            fund_df["profit_margin_change"] = fund_df.groupby("ts_code")["netprofit_margin"].diff(4)
+        else:
+            fund_df["profit_margin_change"] = np.nan
+
+        # ROIC change: roic change vs 4 quarters ago
+        if "roic" in fund_df.columns:
+            fund_df["roic_change"] = fund_df.groupby("ts_code")["roic"].diff(4)
+        else:
+            fund_df["roic_change"] = np.nan
+
+        # New quality factors - direct from fundamentals
+        fund_df["current_ratio"] = fund_df.get("current_ratio", np.nan)
+        fund_df["quick_ratio"] = fund_df.get("quick_ratio", np.nan)
+        fund_df["debt_to_equity"] = fund_df.get("debt_to_eqt", np.nan)
+        fund_df["ocf_to_debt"] = fund_df.get("ocf_to_debt", np.nan)
+        fund_df["ebitda_to_debt"] = fund_df.get("ebitda_to_debt", np.nan)
+        fund_df["roic_level"] = fund_df.get("roic", np.nan)
+        fund_df["roe_yearly"] = fund_df.get("roe_yearly", np.nan)
+        fund_df["roa_yearly"] = fund_df.get("roa_yearly", np.nan)
+        fund_df["cash_to_liqdebt"] = fund_df.get("cash_to_liqdebt", np.nan)
+
+        # Tangible asset ratio: tangible assets / total assets (approx using debt_to_assets)
+        # tangible_asset / total_assets ≈ 1 - intangible_ratio, proxy with debt_to_assets adj
+        tangible = fund_df.get("tangible_asset", pd.Series(np.nan, index=fund_df.index))
+        # We don't have total assets directly, use roa proxy: net_income / roa = total_assets
+        # Better: use bps * shares, but we don't have shares. Use roe/roa ratio.
+        # Simplest proxy: tangible_asset_ratio = 1 - (debt_to_assets / 100) * (1 - cash_ratio)
+        # Actually just use debt_to_assets as inverse quality proxy
+        fund_df["tangible_asset_ratio"] = 1.0 - fund_df.get("debt_to_assets", pd.Series(50.0, index=fund_df.index)) / 100.0
+
+        # Operating leverage: % change in operating profit / % change in revenue
+        # Approximate: op_yoy / or_yoy (when both are available)
+        op_yoy = fund_df.get("op_yoy", pd.Series(np.nan, index=fund_df.index))
+        or_yoy = fund_df.get("or_yoy", pd.Series(np.nan, index=fund_df.index))
+        fund_df["operating_leverage"] = np.where(
+            or_yoy.abs() > 1, op_yoy / or_yoy.replace(0, np.nan), np.nan
+        )
+
+        # Financial leverage: ROE / ROA (measure of how much debt amplifies returns)
+        roe = fund_df.get("roe", pd.Series(np.nan, index=fund_df.index))
+        roa = fund_df.get("roa", pd.Series(np.nan, index=fund_df.index))
+        fund_df["financial_leverage"] = np.where(
+            roa.abs() > 0.1, roe / roa.replace(0, np.nan), np.nan
+        )
+
+        # Keep only needed columns and sort by ann_date for PIT iteration
+        quality_cols = ["ts_code", "ann_date", "end_date"] + list(self.QUALITY_FACTORS)
+        # Map computed columns
+        fund_df["accruals_ratio"] = fund_df["_accruals_ratio"]
+        available_quality_cols = [c for c in quality_cols if c in fund_df.columns]
+        fund_sorted = fund_df[available_quality_cols].sort_values("ann_date").reset_index(drop=True)
+
+        trade_dates = sorted(df["trade_date"].unique())
+        result = df.copy()
+        for col in self.QUALITY_FACTORS:
+            result[col] = np.nan
+
+        # PIT merge
+        latest_fund: dict[str, pd.Series] = {}
+        fund_idx = 0
+        fund_count = len(fund_sorted)
+
+        for trade_date in trade_dates:
+            while fund_idx < fund_count and int(fund_sorted.iat[fund_idx, 1]) <= trade_date:
+                row = fund_sorted.iloc[fund_idx]
+                latest_fund[row["ts_code"]] = row
+                fund_idx += 1
+
+            if not latest_fund:
+                continue
+
+            mask = result["trade_date"] == trade_date
+            day_stocks = result.loc[mask, "ts_code"]
+            for col in self.QUALITY_FACTORS:
+                col_idx = fund_sorted.columns.get_loc(col)
+                vals = day_stocks.map(
+                    lambda ts, col_idx=col_idx:
+                    latest_fund[ts].iat[col_idx] if ts in latest_fund else np.nan
+                )
+                result.loc[mask, col] = pd.to_numeric(vals.values, errors="coerce")
+
+        # Winsorize extreme values
+        for col in self.QUALITY_FACTORS:
+            if result[col].notna().any():
+                q01 = result[col].quantile(0.01)
+                q99 = result[col].quantile(0.99)
+                result[col] = result[col].clip(lower=q01, upper=q99)
+
+        nan_counts = result.loc[:, list(self.QUALITY_FACTORS)].isna().sum().to_dict()
+        self.logger.info("质量因子计算完成：quality_factor_nan_counts=%s", nan_counts)
+        return result
+
+    # ------------------------------------------------------------------
+    # Value factors
+    # ------------------------------------------------------------------
+    def _generate_value_factors(
+        self, df: pd.DataFrame, fund_df: pd.DataFrame, bars_df: pd.DataFrame
+    ) -> pd.DataFrame:
+        """Generate value factors from fundamental data and price (PIT).
+
+        Factors:
+        - ep_ratio: earnings yield = eps / close (TTM EPS / price)
+        - bp_ratio: book-to-price = bps / close
+        - sp_ratio: sales-to-price = revenue_ps / close
+        - cfp_ratio: cash flow yield = cfps / close
+        - dividend_yield_approx: approximated dividend yield (undist_profit_ps / close as proxy)
+        """
+        if fund_df.empty:
+            for col in self.VALUE_FACTORS:
+                df[col] = np.nan
+            self.logger.warning("价值因子跳过：fund_df为空")
+            return df
+
+        fund_df = fund_df.sort_values(["ts_code", "end_date", "ann_date"]).reset_index(drop=True)
+
+        # Keep only needed fundamental columns
+        fund_cols = ["ts_code", "ann_date", "end_date", "eps", "bps", "revenue_ps", "cfps", "undist_profit_ps"]
+        available_cols = [c for c in fund_cols if c in fund_df.columns]
+        fund_sel = fund_df[available_cols].copy()
+
+        # Convert per-share values to numeric
+        for col in ["eps", "bps", "revenue_ps", "cfps", "undist_profit_ps"]:
+            if col in fund_sel.columns:
+                fund_sel[col] = pd.to_numeric(fund_sel[col], errors="coerce")
+
+        fund_sorted = fund_sel.sort_values("ann_date").reset_index(drop=True)
+
+        trade_dates = sorted(df["trade_date"].unique())
+        result = df.copy()
+        for col in self.VALUE_FACTORS:
+            result[col] = np.nan
+
+        # PIT merge: for each trade date, get latest fundamentals per stock
+        latest_fund: dict[str, pd.Series] = {}
+        fund_idx = 0
+        fund_count = len(fund_sorted)
+
+        # Build a lookup for close prices per (date, stock)
+        close_lookup = {}
+        for td in trade_dates:
+            day_mask = bars_df["trade_date"] == td
+            if day_mask.any():
+                day_bars = bars_df.loc[day_mask, ["ts_code", "close"]]
+                close_lookup[td] = dict(zip(day_bars["ts_code"], day_bars["close"]))
+
+        for trade_date in trade_dates:
+            while fund_idx < fund_count and int(fund_sorted.iat[fund_idx, 1]) <= trade_date:
+                row = fund_sorted.iloc[fund_idx]
+                latest_fund[row["ts_code"]] = row
+                fund_idx += 1
+
+            if not latest_fund or trade_date not in close_lookup:
+                continue
+
+            mask = result["trade_date"] == trade_date
+            day_stocks = result.loc[mask, "ts_code"]
+            day_close = close_lookup[trade_date]
+
+            # Compute value ratios
+            ep_vals = []
+            bp_vals = []
+            sp_vals = []
+            cfp_vals = []
+            div_vals = []
+
+            for ts in day_stocks:
+                close_price = day_close.get(ts, np.nan)
+                if ts not in latest_fund or pd.isna(close_price) or close_price <= 0:
+                    ep_vals.append(np.nan)
+                    bp_vals.append(np.nan)
+                    sp_vals.append(np.nan)
+                    cfp_vals.append(np.nan)
+                    div_vals.append(np.nan)
+                    continue
+
+                row = latest_fund[ts]
+                eps_v = row.get("eps", np.nan)
+                bps_v = row.get("bps", np.nan)
+                rev_ps_v = row.get("revenue_ps", np.nan)
+                cfps_v = row.get("cfps", np.nan)
+                undist_v = row.get("undist_profit_ps", np.nan)
+
+                ep_vals.append(eps_v / close_price if pd.notna(eps_v) else np.nan)
+                bp_vals.append(bps_v / close_price if pd.notna(bps_v) else np.nan)
+                sp_vals.append(rev_ps_v / close_price if pd.notna(rev_ps_v) else np.nan)
+                cfp_vals.append(cfps_v / close_price if pd.notna(cfps_v) else np.nan)
+                div_vals.append(undist_v / close_price * 0.3 if pd.notna(undist_v) else np.nan)
+
+            result.loc[mask, "ep_ratio"] = ep_vals
+            result.loc[mask, "bp_ratio"] = bp_vals
+            result.loc[mask, "sp_ratio"] = sp_vals
+            result.loc[mask, "cfp_ratio"] = cfp_vals
+            result.loc[mask, "dividend_yield_approx"] = div_vals
+
+        # Winsorize extreme values
+        for col in self.VALUE_FACTORS:
+            if result[col].notna().any():
+                q01 = result[col].quantile(0.01)
+                q99 = result[col].quantile(0.99)
+                result[col] = result[col].clip(lower=q01, upper=q99)
+
+        nan_counts = result.loc[:, list(self.VALUE_FACTORS)].isna().sum().to_dict()
+        self.logger.info("价值因子计算完成：value_factor_nan_counts=%s", nan_counts)
+        return result
+
+    # ------------------------------------------------------------------
+    # Piotroski F-score factors
+    # ------------------------------------------------------------------
+    def _generate_piotroski_factors(self, df: pd.DataFrame, fund_df: pd.DataFrame) -> pd.DataFrame:
+        """Generate Piotroski F-score and sub-scores from fundamental data (PIT).
+
+        F-score (0-9) measures financial strength across 3 dimensions:
+        - Profitability (4 points): ROA>0, CFO>0, delta_ROA>0, accruals<0 (quality)
+        - Leverage/Liquidity (3 points): delta_leverage<0, delta_liquidity>0, no equity offer
+        - Operating Efficiency (2 points): delta_margin>0, delta_turnover>0
+
+        Factors:
+        - piotroski_f_score: total F-score (0-9)
+        - f_profitability: profitability sub-score (0-4)
+        - f_leverage_liquidity: leverage/liquidity sub-score (0-3)
+        - f_efficiency: operating efficiency sub-score (0-2)
+        """
+        if fund_df.empty:
+            for col in self.PIOTROSKI_FACTORS:
+                df[col] = np.nan
+            self.logger.warning("Piotroski因子跳过：fund_df为空")
+            return df
+
+        fund_df = fund_df.sort_values(["ts_code", "end_date", "ann_date"]).reset_index(drop=True)
+
+        # Compute per-report metrics
+        # ROA
+        if "roa" not in fund_df.columns:
+            fund_df["roa"] = np.nan
+
+        # CFO / assets proxy: ocf_to_or * assets_turn (rough approximation)
+        # Better: use ocf_to_or as CFO signal (positive = good)
+        if "ocf_to_or" not in fund_df.columns:
+            fund_df["ocf_to_or"] = np.nan
+
+        # Gross margin
+        if "grossprofit_margin" not in fund_df.columns:
+            fund_df["grossprofit_margin"] = np.nan
+
+        # Asset turnover
+        if "assets_turn" not in fund_df.columns:
+            fund_df["assets_turn"] = np.nan
+
+        # Leverage
+        if "debt_to_assets" not in fund_df.columns:
+            fund_df["debt_to_assets"] = np.nan
+
+        # Liquidity
+        if "current_ratio" not in fund_df.columns:
+            fund_df["current_ratio"] = np.nan
+
+        # Compute year-over-year changes (4 quarters ago)
+        for ts_code, grp in fund_df.groupby("ts_code", sort=False):
+            pass  # vectorized below
+
+        fund_df["roa_prev"] = fund_df.groupby("ts_code")["roa"].shift(4)
+        fund_df["gm_prev"] = fund_df.groupby("ts_code")["grossprofit_margin"].shift(4)
+        fund_df["at_prev"] = fund_df.groupby("ts_code")["assets_turn"].shift(4)
+        fund_df["dta_prev"] = fund_df.groupby("ts_code")["debt_to_assets"].shift(4)
+        fund_df["cr_prev"] = fund_df.groupby("ts_code")["current_ratio"].shift(4)
+
+        # Accruals: netprofit_margin - ocf_to_or (higher = more accruals = worse quality)
+        if "netprofit_margin" in fund_df.columns and "ocf_to_or" in fund_df.columns:
+            fund_df["accruals"] = fund_df["netprofit_margin"] - fund_df["ocf_to_or"]
+        else:
+            fund_df["accruals"] = np.nan
+
+        # Profitability signals (4 points)
+        fund_df["f_roa_pos"] = (fund_df["roa"] > 0).astype(float)
+        fund_df["f_cfo_pos"] = (fund_df["ocf_to_or"] > 0).astype(float)
+        fund_df["f_delta_roa"] = (fund_df["roa"] - fund_df["roa_prev"] > 0).astype(float)
+        fund_df["f_accruals_neg"] = (fund_df["accruals"] < 0).astype(float)
+        fund_df["f_profitability"] = (
+            fund_df["f_roa_pos"].fillna(0)
+            + fund_df["f_cfo_pos"].fillna(0)
+            + fund_df["f_delta_roa"].fillna(0)
+            + fund_df["f_accruals_neg"].fillna(0)
+        )
+
+        # Leverage/Liquidity signals (3 points)
+        fund_df["f_delta_leverage"] = (fund_df["debt_to_assets"] - fund_df["dta_prev"] < 0).astype(float)
+        fund_df["f_delta_liquidity"] = (fund_df["current_ratio"] - fund_df["cr_prev"] > 0).astype(float)
+        # No equity offer: approximate with bps change not from dilution
+        # Use bps stability as proxy (if bps drops significantly, may be dilution)
+        if "bps" in fund_df.columns:
+            fund_df["bps_prev"] = fund_df.groupby("ts_code")["bps"].shift(4)
+            fund_df["f_no_equity_offer"] = (fund_df["bps"] / fund_df["bps_prev"] > 0.95).astype(float)
+        else:
+            fund_df["f_no_equity_offer"] = 1.0  # default to 1 if can't compute
+        fund_df["f_leverage_liquidity"] = (
+            fund_df["f_delta_leverage"].fillna(0)
+            + fund_df["f_delta_liquidity"].fillna(0)
+            + fund_df["f_no_equity_offer"].fillna(0)
+        )
+
+        # Operating efficiency signals (2 points)
+        fund_df["f_delta_margin"] = (fund_df["grossprofit_margin"] - fund_df["gm_prev"] > 0).astype(float)
+        fund_df["f_delta_turnover"] = (fund_df["assets_turn"] - fund_df["at_prev"] > 0).astype(float)
+        fund_df["f_efficiency"] = (
+            fund_df["f_delta_margin"].fillna(0)
+            + fund_df["f_delta_turnover"].fillna(0)
+        )
+
+        # Total F-score
+        fund_df["piotroski_f_score"] = (
+            fund_df["f_profitability"]
+            + fund_df["f_leverage_liquidity"]
+            + fund_df["f_efficiency"]
+        )
+
+        # Keep only needed columns and sort by ann_date for PIT iteration
+        f_cols = ["ts_code", "ann_date", "end_date"] + list(self.PIOTROSKI_FACTORS)
+        fund_sorted = fund_df[f_cols].sort_values("ann_date").reset_index(drop=True)
+
+        trade_dates = sorted(df["trade_date"].unique())
+        result = df.copy()
+        for col in self.PIOTROSKI_FACTORS:
+            result[col] = np.nan
+
+        # PIT merge
+        latest_fund: dict[str, pd.Series] = {}
+        fund_idx = 0
+        fund_count = len(fund_sorted)
+
+        for trade_date in trade_dates:
+            while fund_idx < fund_count and int(fund_sorted.iat[fund_idx, 1]) <= trade_date:
+                row = fund_sorted.iloc[fund_idx]
+                latest_fund[row["ts_code"]] = row
+                fund_idx += 1
+
+            if not latest_fund:
+                continue
+
+            mask = result["trade_date"] == trade_date
+            day_stocks = result.loc[mask, "ts_code"]
+            for col in self.PIOTROSKI_FACTORS:
+                col_idx = fund_sorted.columns.get_loc(col)
+                vals = day_stocks.map(
+                    lambda ts, col_idx=col_idx:
+                    latest_fund[ts].iat[col_idx] if ts in latest_fund else np.nan
+                )
+                result.loc[mask, col] = pd.to_numeric(vals.values, errors="coerce")
+
+        nan_counts = result.loc[:, list(self.PIOTROSKI_FACTORS)].isna().sum().to_dict()
+        self.logger.info("Piotroski因子计算完成：piotroski_factor_nan_counts=%s", nan_counts)
+        return result
+
+    # ------------------------------------------------------------------
+    # Growth factors
+    # ------------------------------------------------------------------
+    def _generate_growth_factors(self, df: pd.DataFrame, fund_df: pd.DataFrame) -> pd.DataFrame:
+        """Generate growth factors from fundamental data (PIT).
+
+        Factors:
+        - op_yoy: operating profit YoY growth
+        - netprofit_yoy: net profit YoY growth
+        - roe_yoy: ROE YoY change
+        - bps_yoy: book value per share YoY growth
+        - assets_yoy: total assets YoY growth
+        - equity_yoy: equity YoY growth
+        - basic_eps_yoy: basic EPS YoY growth
+        - cfps_yoy: cash flow per share YoY growth
+        - revenue_acceleration_2q: revenue growth acceleration (current - 2q ago)
+        - profit_acceleration_2q: net profit growth acceleration
+        - roe_momentum_4q: ROE change over 4 quarters
+        - earnings_surprise_qoq: quarterly earnings surprise (QoQ change)
+        """
+        if fund_df.empty:
+            for col in self.GROWTH_FACTORS:
+                df[col] = np.nan
+            self.logger.warning("成长因子跳过：fund_df为空")
+            return df
+
+        fund_df = fund_df.sort_values(["ts_code", "end_date", "ann_date"]).reset_index(drop=True)
+
+        # Direct growth rates from fundamentals
+        for src_col, target_col in [
+            ("op_yoy", "op_yoy"),
+            ("netprofit_yoy", "netprofit_yoy"),
+            ("roe_yoy", "roe_yoy"),
+            ("bps_yoy", "bps_yoy"),
+            ("assets_yoy", "assets_yoy"),
+            ("equity_yoy", "equity_yoy"),
+            ("basic_eps_yoy", "basic_eps_yoy"),
+            ("cfps_yoy", "cfps_yoy"),
+        ]:
+            if src_col in fund_df.columns:
+                fund_df[target_col] = fund_df[src_col]
+            else:
+                fund_df[target_col] = np.nan
+
+        # Revenue acceleration: or_yoy - or_yoy shifted by 2 quarters
+        if "or_yoy" in fund_df.columns:
+            fund_df["revenue_acceleration_2q"] = fund_df.groupby("ts_code")["or_yoy"].diff(2)
+        else:
+            fund_df["revenue_acceleration_2q"] = np.nan
+
+        # Profit acceleration: netprofit_yoy - netprofit_yoy shifted by 2 quarters
+        if "netprofit_yoy" in fund_df.columns:
+            fund_df["profit_acceleration_2q"] = fund_df.groupby("ts_code")["netprofit_yoy"].diff(2)
+        else:
+            fund_df["profit_acceleration_2q"] = np.nan
+
+        # ROE momentum: ROE change over 4 quarters
+        if "roe" in fund_df.columns:
+            fund_df["roe_momentum_4q"] = fund_df.groupby("ts_code")["roe"].diff(4)
+        else:
+            fund_df["roe_momentum_4q"] = np.nan
+
+        # Earnings surprise: q_netprofit_yoy QoQ change (quarter-over-quarter)
+        if "q_netprofit_yoy" in fund_df.columns:
+            fund_df["earnings_surprise_qoq"] = fund_df.groupby("ts_code")["q_netprofit_yoy"].diff(1)
+        else:
+            fund_df["earnings_surprise_qoq"] = np.nan
+
+        # PIT merge
+        growth_cols = ["ts_code", "ann_date", "end_date"] + list(self.GROWTH_FACTORS)
+        fund_sorted = fund_df[growth_cols].sort_values("ann_date").reset_index(drop=True)
+
+        trade_dates = sorted(df["trade_date"].unique())
+        result = df.copy()
+        for col in self.GROWTH_FACTORS:
+            result[col] = np.nan
+
+        latest_fund: dict[str, pd.Series] = {}
+        fund_idx = 0
+        fund_count = len(fund_sorted)
+
+        for trade_date in trade_dates:
+            while fund_idx < fund_count and int(fund_sorted.iat[fund_idx, 1]) <= trade_date:
+                row = fund_sorted.iloc[fund_idx]
+                latest_fund[row["ts_code"]] = row
+                fund_idx += 1
+
+            if not latest_fund:
+                continue
+
+            mask = result["trade_date"] == trade_date
+            day_stocks = result.loc[mask, "ts_code"]
+            for col in self.GROWTH_FACTORS:
+                col_idx = fund_sorted.columns.get_loc(col)
+                vals = day_stocks.map(
+                    lambda ts, col_idx=col_idx:
+                    latest_fund[ts].iat[col_idx] if ts in latest_fund else np.nan
+                )
+                result.loc[mask, col] = pd.to_numeric(vals.values, errors="coerce")
+
+        for col in self.GROWTH_FACTORS:
+            if result[col].notna().any():
+                q01 = result[col].quantile(0.01)
+                q99 = result[col].quantile(0.99)
+                result[col] = result[col].clip(lower=q01, upper=q99)
+
+        nan_counts = result.loc[:, list(self.GROWTH_FACTORS)].isna().sum().to_dict()
+        self.logger.info("成长因子计算完成：growth_factor_nan_counts=%s", nan_counts)
+        return result
+
+    # ------------------------------------------------------------------
+    # Moneyflow depth factors
+    # ------------------------------------------------------------------
+    def _generate_moneyflow_depth_factors(self, df: pd.DataFrame, mf_df: pd.DataFrame) -> pd.DataFrame:
+        """Generate deeper moneyflow structure factors.
+
+        Factors capture the distribution of money flow across investor types
+        (small/medium/large/extra-large), providing more granular alpha signals.
+        """
+        mf_slim = mf_df[["trade_date", "ts_code"]].copy()
+        amount = pd.to_numeric(mf_df.get("amount", np.nan), errors="coerce")
+        amount_wan = amount / 10.0
+
+        buy_sm = pd.to_numeric(mf_df.get("buy_sm_amount", 0), errors="coerce")
+        sell_sm = pd.to_numeric(mf_df.get("sell_sm_amount", 0), errors="coerce")
+        buy_md = pd.to_numeric(mf_df.get("buy_md_amount", 0), errors="coerce")
+        sell_md = pd.to_numeric(mf_df.get("sell_md_amount", 0), errors="coerce")
+        buy_lg = pd.to_numeric(mf_df.get("buy_lg_amount", 0), errors="coerce")
+        sell_lg = pd.to_numeric(mf_df.get("sell_lg_amount", 0), errors="coerce")
+        buy_elg = pd.to_numeric(mf_df.get("buy_elg_amount", 0), errors="coerce")
+        sell_elg = pd.to_numeric(mf_df.get("sell_elg_amount", 0), errors="coerce")
+
+        mf_slim["lg_net_inflow"] = buy_lg - sell_lg
+        mf_slim["elg_net_inflow"] = buy_elg - sell_elg
+        mf_slim["sm_net_inflow"] = buy_sm - sell_sm
+        mf_slim["md_net_inflow"] = buy_md - sell_md
+        mf_slim["retail_net_inflow"] = buy_sm + buy_md - sell_sm - sell_md
+
+        mf_slim["lg_net_ratio"] = mf_slim["lg_net_inflow"] / amount_wan.replace(0, np.nan)
+        mf_slim["elg_net_ratio"] = mf_slim["elg_net_inflow"] / amount_wan.replace(0, np.nan)
+        mf_slim["sm_net_ratio"] = mf_slim["sm_net_inflow"] / amount_wan.replace(0, np.nan)
+        mf_slim["md_net_ratio"] = mf_slim["md_net_inflow"] / amount_wan.replace(0, np.nan)
+        mf_slim["retail_net_ratio"] = mf_slim["retail_net_inflow"] / amount_wan.replace(0, np.nan)
+
+        merged = df.merge(mf_slim, on=["trade_date", "ts_code"], how="left")
+        stock_group = merged.groupby("ts_code", sort=False, group_keys=False)
+
+        # Main-retail ratio: institutional vs retail flow divergence
+        if "main_net_ratio" in merged.columns:
+            merged["main_retail_ratio_20"] = stock_group["main_net_ratio"].transform(
+                lambda s: s.rolling(20, min_periods=10).mean()
+            ) - stock_group["retail_net_ratio"].transform(
+                lambda s: s.rolling(20, min_periods=10).mean()
+            )
+        else:
+            merged["main_retail_ratio_20"] = np.nan
+
+        # Large vs extra-large ratio: smart money structure
+        merged["lg_elg_ratio_20"] = (
+            stock_group["lg_net_ratio"].transform(lambda s: s.rolling(20, min_periods=10).mean())
+            - stock_group["elg_net_ratio"].transform(lambda s: s.rolling(20, min_periods=10).mean())
+        )
+
+        # Moneyflow strength: 5-day average of absolute net flow / amount
+        merged["moneyflow_strength_5"] = stock_group["main_net_ratio"].transform(
+            lambda s: s.abs().rolling(5, min_periods=3).mean()
+        ) if "main_net_ratio" in merged.columns else np.nan
+
+        # Moneyflow dispersion: std of net flow ratios across types
+        flow_cols = [c for c in ["sm_net_ratio", "md_net_ratio", "lg_net_ratio", "elg_net_ratio"] if c in merged.columns]
+        if flow_cols:
+            merged["moneyflow_dispersion_20"] = merged.groupby("ts_code")[flow_cols].transform(
+                lambda s: s.rolling(20, min_periods=10).std()
+            ).mean(axis=1)
+        else:
+            merged["moneyflow_dispersion_20"] = np.nan
+
+        # Net money flow amount ratio (total net / amount)
+        if "net_mf_amount" in mf_df.columns:
+            net_mf = pd.to_numeric(mf_df.get("net_mf_amount", 0), errors="coerce")
+            mf_slim2 = mf_df[["trade_date", "ts_code"]].copy()
+            mf_slim2["net_mf_amount_ratio"] = net_mf / amount.replace(0, np.nan)
+            merged = merged.merge(mf_slim2, on=["trade_date", "ts_code"], how="left")
+        else:
+            merged["net_mf_amount_ratio"] = np.nan
+
+        # Net money flow volume ratio
+        if "net_mf_vol" in mf_df.columns:
+            net_mf_vol = pd.to_numeric(mf_df.get("net_mf_vol", 0), errors="coerce")
+            vol = pd.to_numeric(mf_df.get("buy_sm_vol", 0) + mf_df.get("sell_sm_vol", 0), errors="coerce")
+            mf_slim3 = mf_df[["trade_date", "ts_code"]].copy()
+            mf_slim3["net_mf_vol_ratio"] = net_mf_vol / vol.replace(0, np.nan)
+            merged = merged.merge(mf_slim3, on=["trade_date", "ts_code"], how="left")
+        else:
+            merged["net_mf_vol_ratio"] = np.nan
+
+        # Buy pressure: 5d avg of (buy_lg + buy_elg) / total amount
+        total_buy = buy_lg + buy_elg
+        total_sell = sell_lg + sell_elg
+        mf_slim4 = mf_df[["trade_date", "ts_code"]].copy()
+        mf_slim4["buy_pressure_raw"] = total_buy / amount_wan.replace(0, np.nan)
+        mf_slim4["sell_pressure_raw"] = total_sell / amount_wan.replace(0, np.nan)
+        merged = merged.merge(mf_slim4, on=["trade_date", "ts_code"], how="left")
+        merged = merged.sort_values(["ts_code", "trade_date"], kind="mergesort").reset_index(drop=True)
+        stock_group2 = merged.groupby("ts_code", sort=False, group_keys=False)
+        merged["buy_pressure_5"] = stock_group2["buy_pressure_raw"].transform(
+            lambda s: s.rolling(5, min_periods=3).mean()
+        )
+        merged["sell_pressure_5"] = stock_group2["sell_pressure_raw"].transform(
+            lambda s: s.rolling(5, min_periods=3).mean()
+        )
+        merged = merged.drop(columns=["buy_pressure_raw", "sell_pressure_raw"])
+
+        # Clean up intermediate columns
+        drop_cols = ["lg_net_inflow", "elg_net_inflow", "sm_net_inflow", "md_net_inflow", "retail_net_inflow"]
+        drop_cols = [c for c in drop_cols if c in merged.columns]
+        if drop_cols:
+            merged = merged.drop(columns=drop_cols)
+
+        nan_counts = merged.loc[:, list(self.MONEYFLOW_DEPTH_FACTORS)].isna().sum().to_dict()
+        self.logger.info("深度资金流因子计算完成：mf_depth_factor_nan_counts=%s", nan_counts)
+        return merged
+
+    # ------------------------------------------------------------------
+    # Industry depth factors
+    # ------------------------------------------------------------------
+    def _generate_industry_depth_factors(
+        self, df: pd.DataFrame, ind_df: pd.DataFrame, fund_df: pd.DataFrame | None
+    ) -> pd.DataFrame:
+        """Generate deeper industry-relative fundamental and momentum factors.
+
+        Factors:
+        - industry_rank_roe: percentile rank of ROE within industry
+        - industry_rank_gross_margin: percentile rank of gross margin within industry
+        - industry_rank_roic: percentile rank of ROIC within industry
+        - industry_rank_netprofit_yoy: percentile rank of net profit growth within industry
+        - industry_rank_turn_days: percentile rank of operating cycle within industry
+        - industry_momentum_5: 5-day industry return momentum
+        - industry_momentum_20: 20-day industry return momentum
+        - relative_momentum_20: stock momentum minus industry momentum
+        - industry_concentration: HHI of stock weights within industry (inverse)
+        """
+        ind_slim = ind_df[["trade_date", "ts_code", "l1_name"]].copy()
+        merged = df.merge(ind_slim, on=["trade_date", "ts_code"], how="left")
+
+        # Industry fundamental ranks (use latest available fundamental per stock)
+        if fund_df is not None and not fund_df.empty:
+            # Get latest fundamental per stock (approximate - use most recent ann_date)
+            # For efficiency, we use the PIT approach: for each trade date, get latest fund
+            fund_sorted = fund_df.sort_values(["ts_code", "ann_date"]).reset_index(drop=True)
+            trade_dates = sorted(merged["trade_date"].unique())
+
+            # Build a stock->latest fund mapping per trade date
+            # For efficiency, compute ranks using a simpler approach:
+            # For each trade date, use the latest annual report available
+            latest_fund_per_stock: dict[str, pd.Series] = {}
+            fund_idx = 0
+            fund_count = len(fund_sorted)
+
+            rank_cols = {
+                "roe": "industry_rank_roe",
+                "grossprofit_margin": "industry_rank_gross_margin",
+                "roic": "industry_rank_roic",
+                "netprofit_yoy": "industry_rank_netprofit_yoy",
+                "turn_days": "industry_rank_turn_days",
+            }
+
+            for col in rank_cols.values():
+                merged[col] = np.nan
+
+            # Build daily fundamental snapshot
+            fund_daily: dict[int, dict[str, dict[str, float]]] = {}
+
+            for trade_date in trade_dates:
+                td_int = int(trade_date)
+                while fund_idx < fund_count and int(fund_sorted.iat[fund_idx, fund_sorted.columns.get_loc("ann_date")]) <= td_int:
+                    row = fund_sorted.iloc[fund_idx]
+                    latest_fund_per_stock[row["ts_code"]] = row
+                    fund_idx += 1
+
+                if not latest_fund_per_stock:
+                    continue
+
+                fund_daily[td_int] = {
+                    ts: {
+                        src: latest_fund_per_stock[ts].iat[fund_sorted.columns.get_loc(src)]
+                        for src in rank_cols if src in fund_sorted.columns
+                    }
+                    for ts in latest_fund_per_stock
+                }
+
+            # Now compute industry ranks for each trade date
+            for trade_date in trade_dates:
+                td_int = int(trade_date)
+                if td_int not in fund_daily:
+                    continue
+
+                mask = merged["trade_date"] == trade_date
+                day_data = merged.loc[mask, ["ts_code", "l1_name"]].copy()
+
+                for src_col, tgt_col in rank_cols.items():
+                    if src_col not in fund_sorted.columns:
+                        continue
+                    vals = day_data["ts_code"].map(
+                        lambda ts: fund_daily[td_int].get(ts, {}).get(src_col, np.nan)
+                    )
+                    day_data["_val"] = pd.to_numeric(vals.values, errors="coerce")
+                    ranks = day_data.groupby("l1_name")["_val"].rank(method="average", pct=True)
+                    merged.loc[mask, tgt_col] = ranks.values
+
+                del day_data
+        else:
+            for col in ["industry_rank_roe", "industry_rank_gross_margin", "industry_rank_roic",
+                         "industry_rank_netprofit_yoy", "industry_rank_turn_days"]:
+                merged[col] = np.nan
+
+        # Industry momentum
+        ind_daily_ret = merged.groupby(["trade_date", "l1_name"])["pct_chg"].mean().reset_index()
+        ind_daily_ret.columns = ["trade_date", "l1_name", "ind_daily_ret"]
+        ind_daily_ret = ind_daily_ret.sort_values(["l1_name", "trade_date"]).reset_index(drop=True)
+
+        ind_group = ind_daily_ret.groupby("l1_name", sort=False)
+        ind_daily_ret["industry_momentum_5"] = ind_group["ind_daily_ret"].transform(
+            lambda s: (s + 1).rolling(5, min_periods=3).apply(lambda x: x.prod() - 1, raw=True)
+        )
+        ind_daily_ret["industry_momentum_20"] = ind_group["ind_daily_ret"].transform(
+            lambda s: (s + 1).rolling(20, min_periods=10).apply(lambda x: x.prod() - 1, raw=True)
+        )
+
+        merged = merged.merge(
+            ind_daily_ret[["trade_date", "l1_name", "industry_momentum_5", "industry_momentum_20"]],
+            on=["trade_date", "l1_name"],
+            how="left",
+        )
+
+        # Relative momentum: stock 20d return minus industry 20d return
+        stock_group = merged.groupby("ts_code", sort=False, group_keys=False)
+        merged["_stock_ret_20"] = stock_group["pct_chg"].transform(
+            lambda s: (s / 100 + 1).rolling(20, min_periods=10).apply(lambda x: x.prod() - 1, raw=True)
+        )
+        merged["relative_momentum_20"] = merged["_stock_ret_20"] - merged["industry_momentum_20"]
+        merged = merged.drop(columns=["_stock_ret_20"])
+
+        # Industry concentration (inverse HHI - more diverse = higher value)
+        ind_count = merged.groupby(["trade_date", "l1_name"])["ts_code"].transform("count")
+        merged["industry_concentration"] = 1.0 / ind_count.replace(0, np.nan)
+
+        merged = merged.drop(columns=["l1_name"])
+
+        nan_counts = merged.loc[:, list(self.INDUSTRY_DEPTH_FACTORS)].isna().sum().to_dict()
+        self.logger.info("深度行业因子计算完成：industry_depth_factor_nan_counts=%s", nan_counts)
+        return merged
+
+    # ------------------------------------------------------------------
+    # Sentiment proxy factors
+    # ------------------------------------------------------------------
+    def _generate_sentiment_proxy_factors(self, df: pd.DataFrame, fund_df: pd.DataFrame) -> pd.DataFrame:
+        """Generate sentiment-proxy factors from fundamental data (PIT).
+
+        Since we don't have direct analyst data, we use fundamental signals
+        that correlate with analyst sentiment and market expectations.
+
+        Factors:
+        - rd_intensity: R&D expense / revenue (innovation intensity)
+        - rd_growth: R&D expense YoY growth
+        - earnings_quality_composite: composite of accruals, ocf/profit, and stability
+        - profit_consistency: fraction of positive profit quarters in last 8
+        - dividend_payout_approx: approximate dividend payout ratio (undist_profit change proxy)
+        """
+        if fund_df.empty:
+            for col in self.SENTIMENT_PROXY_FACTORS:
+                df[col] = np.nan
+            self.logger.warning("情绪代理因子跳过：fund_df为空")
+            return df
+
+        fund_df = fund_df.sort_values(["ts_code", "end_date", "ann_date"]).reset_index(drop=True)
+
+        # R&D intensity: rd_exp / revenue (rd_exp is total R&D, use revenue_ps * shares as proxy)
+        # Better: rd_exp / total_revenue. We approximate using rd_exp / (revenue_ps is per share)
+        # Use rd_exp directly as a level signal, normalized by total assets proxy
+        if "rd_exp" in fund_df.columns and "total_revenue_ps" in fund_df.columns:
+            # rd_exp is absolute, revenue_ps is per share - not directly comparable
+            # Use rd_exp / (revenue_ps) as a noisy proxy, or just use rd_exp level
+            fund_df["rd_intensity"] = np.where(
+                fund_df["total_revenue_ps"].abs() > 0.001,
+                fund_df["rd_exp"] / (fund_df["total_revenue_ps"] * 1e6).replace(0, np.nan),
+                np.nan
+            )
+        elif "rd_exp" in fund_df.columns:
+            fund_df["rd_intensity"] = fund_df["rd_exp"]
+        else:
+            fund_df["rd_intensity"] = np.nan
+
+        # R&D growth: YoY change in rd_exp
+        if "rd_exp" in fund_df.columns:
+            fund_df["rd_growth"] = fund_df.groupby("ts_code")["rd_exp"].pct_change(4)
+            fund_df["rd_growth"] = fund_df["rd_growth"].replace([np.inf, -np.inf], np.nan)
+        else:
+            fund_df["rd_growth"] = np.nan
+
+        # Earnings quality composite: z-score average of (negative accruals, ocf_to_profit, roe_stability)
+        # Compute components first
+        if "netprofit_margin" in fund_df.columns and "ocf_to_or" in fund_df.columns:
+            accruals = fund_df["netprofit_margin"] - fund_df["ocf_to_or"]
+        else:
+            accruals = pd.Series(np.nan, index=fund_df.index)
+
+        if "ocf_to_profit" not in fund_df.columns:
+            npm = fund_df.get("netprofit_margin", pd.Series(0, index=fund_df.index))
+            ocf_or = fund_df.get("ocf_to_or", pd.Series(0, index=fund_df.index))
+            fund_df["ocf_to_profit"] = np.where(
+                npm.abs() > 0.001, ocf_or / npm.replace(0, np.nan), np.nan
+            )
+
+        # ROE stability
+        roe_stab = pd.Series(index=fund_df.index, dtype="float64")
+        for ts, grp in fund_df.groupby("ts_code", sort=False):
+            roe_vals = grp["roe"].astype("float64")
+            rolling_std = roe_vals.rolling(8, min_periods=4).std()
+            roe_stab.loc[grp.index] = (1.0 / (1.0 + rolling_std.abs())).values
+        fund_df["_roe_stab"] = roe_stab
+
+        # Composite: average of ranks (negative accruals = good, high ocf/profit = good, high stability = good)
+        # Simple average of normalized components
+        fund_df["earnings_quality_composite"] = (
+            -accruals.fillna(0) / (accruals.abs().quantile(0.99) if accruals.abs().quantile(0.99) > 0 else 1)
+            + fund_df["ocf_to_profit"].fillna(0).clip(-5, 5) / 5
+            + fund_df["_roe_stab"].fillna(0)
+        ) / 3.0
+
+        # Profit consistency: fraction of quarters with positive net profit in last 8
+        if "netprofit_yoy" in fund_df.columns:
+            is_profitable = (fund_df["netprofit_yoy"] > 0).astype(float)
+            profit_cons = pd.Series(index=fund_df.index, dtype="float64")
+            for ts, grp in fund_df.groupby("ts_code", sort=False):
+                profit_cons.loc[grp.index] = is_profitable.loc[grp.index].rolling(8, min_periods=4).mean()
+            fund_df["profit_consistency"] = profit_cons
+        else:
+            fund_df["profit_consistency"] = np.nan
+
+        # Dividend payout approximation: undistributed profit per share growth vs EPS
+        # Rough proxy: bps_yoy vs roe (if bps grows slower than roe, dividends are paid)
+        if "bps_yoy" in fund_df.columns and "roe" in fund_df.columns:
+            fund_df["dividend_payout_approx"] = fund_df["roe"] - fund_df["bps_yoy"]
+        else:
+            fund_df["dividend_payout_approx"] = np.nan
+
+        # Clean up temp columns
+        temp_cols = ["_roe_stab"]
+        for col in temp_cols:
+            if col in fund_df.columns:
+                fund_df = fund_df.drop(columns=[col])
+
+        # PIT merge
+        sent_cols = ["ts_code", "ann_date", "end_date"] + list(self.SENTIMENT_PROXY_FACTORS)
+        available_cols = [c for c in sent_cols if c in fund_df.columns]
+        fund_sorted = fund_df[available_cols].sort_values("ann_date").reset_index(drop=True)
+
+        trade_dates = sorted(df["trade_date"].unique())
+        result = df.copy()
+        for col in self.SENTIMENT_PROXY_FACTORS:
+            result[col] = np.nan
+
+        latest_fund: dict[str, pd.Series] = {}
+        fund_idx = 0
+        fund_count = len(fund_sorted)
+
+        for trade_date in trade_dates:
+            while fund_idx < fund_count and int(fund_sorted.iat[fund_idx, 1]) <= trade_date:
+                row = fund_sorted.iloc[fund_idx]
+                latest_fund[row["ts_code"]] = row
+                fund_idx += 1
+
+            if not latest_fund:
+                continue
+
+            mask = result["trade_date"] == trade_date
+            day_stocks = result.loc[mask, "ts_code"]
+            for col in self.SENTIMENT_PROXY_FACTORS:
+                if col not in fund_sorted.columns:
+                    continue
+                col_idx = fund_sorted.columns.get_loc(col)
+                vals = day_stocks.map(
+                    lambda ts, col_idx=col_idx:
+                    latest_fund[ts].iat[col_idx] if ts in latest_fund else np.nan
+                )
+                result.loc[mask, col] = pd.to_numeric(vals.values, errors="coerce")
+
+        for col in self.SENTIMENT_PROXY_FACTORS:
+            if result[col].notna().any():
+                q01 = result[col].quantile(0.01)
+                q99 = result[col].quantile(0.99)
+                result[col] = result[col].clip(lower=q01, upper=q99)
+
+        nan_counts = result.loc[:, list(self.SENTIMENT_PROXY_FACTORS)].isna().sum().to_dict()
+        self.logger.info("情绪代理因子计算完成：sentiment_proxy_factor_nan_counts=%s", nan_counts)
+        return result
+
+    # ------------------------------------------------------------------
     # Data loading helpers
     # ------------------------------------------------------------------
     def _load_moneyflow(self) -> pd.DataFrame:
@@ -865,7 +2096,18 @@ class EnhancedAlphaFactorGenerator:
         df["ts_code"] = df["ts_code"].astype("string").str.strip()
         df["ann_date"] = self._normalize_yyyymmdd(df["ann_date"], "ann_date", self.fundamentals_file)
         df["end_date"] = self._normalize_yyyymmdd(df["end_date"], "end_date", self.fundamentals_file)
-        for col in ["roe", "roa", "or_yoy", "gross_margin", "grossprofit_margin", "debt_to_assets", "eps", "bps"]:
+        for col in ["roe", "roa", "or_yoy", "gross_margin", "grossprofit_margin",
+                    "debt_to_assets", "eps", "bps", "netprofit_margin", "ocf_to_or",
+                    "assets_turn", "ebit_of_gr", "finaexp_of_gr", "roic", "netprofit_yoy",
+                    "revenue_ps", "cfps", "current_ratio", "undist_profit_ps",
+                    "quick_ratio", "debt_to_eqt", "ocf_to_debt", "ebitda_to_debt",
+                    "roe_yearly", "roa_yearly", "roic_yearly", "cash_to_liqdebt",
+                    "tangible_asset", "op_yoy", "roe_yoy", "bps_yoy", "assets_yoy",
+                    "equity_yoy", "basic_eps_yoy", "cfps_yoy", "rd_exp",
+                    "salescash_to_or", "ocf_to_opincome", "profit_to_op",
+                    "op_to_debt", "ocf_to_shortdebt", "turn_days", "invturn_days",
+                    "arturn_days", "ca_to_assets", "n_op_profit_of_ebt",
+                    "opincome_of_ebt", "investincome_of_ebt"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
         return df
