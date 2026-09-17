@@ -259,6 +259,13 @@ run_step process_suspend_d \
     --log-level "${LOG_LEVEL}" \
     --log-file "${LOG_DIR}/${RUN_ID}_suspend_d_processing_inner.log"
 
+run_step process_daily_industry_onehot \
+  python3 "${DATASET_PROCESSOR_PATH}/daily_industry_onehot_processor.py" \
+    --input-dir "${CLEANED_DATA_DIR}/industry" \
+    --output-dir "${PROCESSED_DATA_DIR}/industry/daily_onehot" \
+    --log-level "${LOG_LEVEL}" \
+    --log-file "${LOG_DIR}/${RUN_ID}_daily_industry_onehot_processing_inner.log"
+
 run_step process_industry_onehot \
   python3 "${DATASET_PROCESSOR_PATH}/industry_onehot_processor.py" \
     --input-file "${CLEANED_DATA_DIR}/industry/industry.parquet" \
@@ -275,7 +282,7 @@ if [[ "${BUILD_WIDE_TABLE}" == "1" ]]; then
       --adj-factor-file "${CLEANED_DATA_DIR}/adj_factors/adj_factors.parquet" \
       --fundamentals-file "${CLEANED_DATA_DIR}/fundamentals/fundamentals.parquet" \
       --moneyflow-file "${CLEANED_DATA_DIR}/moneyflow/moneyflow.parquet" \
-      --industry-file "${PROCESSED_DATA_DIR}/industry/industry_onehot.parquet" \
+      --industry-file "${PROCESSED_DATA_DIR}/industry/daily_onehot" \
       --output-dir "${PROCESSED_DATA_DIR}/wide_table_daily_bars" \
       "${WIDE_DATE_ARGS[@]}" \
       --log-level "${LOG_LEVEL}" \

@@ -94,7 +94,7 @@ class WideTableDailyBarsBuilder:
         "/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/data/cleaned_data/moneyflow/moneyflow.parquet"
     )
     DEFAULT_INDUSTRY_FILE = Path(
-        "/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/data/processd_data/industry/industry_onehot.parquet"
+        "/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/data/processd_data/industry/daily_onehot"
     )
     DEFAULT_OUTPUT_DIR = Path("/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/data/processd_data/wide_table_daily_bars")
     DEFAULT_LOG_FILE = Path("/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/log/wide_table_daily_bars_building.log")
@@ -136,12 +136,13 @@ class WideTableDailyBarsBuilder:
         self.adj_factor_file = Path(adj_factor_file or self.DEFAULT_ADJ_FACTOR_FILE)
         self.fundamentals_file = Path(fundamentals_file or self.DEFAULT_FUNDAMENTALS_FILE)
         self.moneyflow_file = Path(moneyflow_file or self.DEFAULT_MONEYFLOW_FILE)
-        self.industry_file = Path(industry_file or self.DEFAULT_INDUSTRY_FILE)
+        self.industry_path = Path(industry_file or self.DEFAULT_INDUSTRY_FILE)
         self.output_dir = Path(output_dir or self.DEFAULT_OUTPUT_DIR)
         self.start_date = self._parse_optional_date(start_date, "start_date")
         self.end_date = self._parse_optional_date(end_date, "end_date")
         self.logger = logger or logging.getLogger(self.__class__.__name__)
 
+        self._industry_is_daily = self.industry_path.is_dir()
         self._validate_inputs()
 
     def process(self) -> WideTableDailyBarsBuildSummary:
@@ -216,7 +217,11 @@ class WideTableDailyBarsBuilder:
             moneyflow_matched_rows += file_moneyflow_matched
             missing_moneyflow_rows += file_rows - file_moneyflow_matched
 
-            enriched_df, file_industry_matched = self._merge_industry(enriched_df, features.industry_df, features.industry_feature_columns)
+            enriched_df, file_industry_matched = self._merge_industry(
+                enriched_df,
+                features.industry_df,
+                features.industry_feature_columns,
+            )
             industry_matched_rows += file_industry_matched
 
             output_file = self._output_path_for(parquet_file)
@@ -267,10 +272,11 @@ class WideTableDailyBarsBuilder:
             self.adj_factor_file,
             self.fundamentals_file,
             self.moneyflow_file,
-            self.industry_file,
         ):
             if not file_path.exists() or not file_path.is_file():
                 raise FileNotFoundError(f"Required input parquet file does not exist: {file_path}")
+        if not self.industry_path.exists():
+            raise FileNotFoundError(f"Industry input does not exist: {self.industry_path}")
         if self.start_date is not None and self.end_date is not None and self.start_date > self.end_date:
             raise ValueError(f"start_date must be <= end_date, got {self.start_date} > {self.end_date}")
 
@@ -313,29 +319,34 @@ class WideTableDailyBarsBuilder:
         self.logger.info("加载 cleaned MoneyFlow 特征：%s", self.moneyflow_file)
         moneyflow_df = self._load_moneyflow_feature()
 
-        self.logger.info("加载 processed industry one-hot 特征：%s", self.industry_file)
-        industry_df = pd.read_parquet(self.industry_file)
-        self._validate_columns(industry_df.columns, ("ts_code", "in_date", "out_date"), self.industry_file)
-        industry_df = industry_df.copy()
-        industry_df["ts_code"] = industry_df["ts_code"].astype("string").str.strip()
-        industry_df = industry_df.loc[~self._is_null_or_empty(industry_df["ts_code"])].copy()
-        industry_df["in_date"] = self._normalize_yyyymmdd(industry_df["in_date"], "in_date", self.industry_file)
-        industry_df["out_date"] = self._normalize_optional_yyyymmdd(industry_df["out_date"], "out_date", self.industry_file)
-        industry_df["_in_dt"] = pd.to_datetime(industry_df["in_date"].astype("string"), format="%Y%m%d", errors="coerce")
-        industry_df["_out_dt"] = pd.to_datetime(industry_df["out_date"].astype("string"), format="%Y%m%d", errors="coerce")
+        if self._industry_is_daily:
+            self.logger.info("行业数据为日度分区目录，将按天加载：%s", self.industry_path)
+            industry_df = pd.DataFrame()
+            industry_feature_columns = self._discover_daily_industry_columns()
+        else:
+            self.logger.info("加载 processed industry one-hot 特征：%s", self.industry_path)
+            industry_df = pd.read_parquet(self.industry_path)
+            self._validate_columns(industry_df.columns, ("ts_code", "in_date", "out_date"), self.industry_path)
+            industry_df = industry_df.copy()
+            industry_df["ts_code"] = industry_df["ts_code"].astype("string").str.strip()
+            industry_df = industry_df.loc[~self._is_null_or_empty(industry_df["ts_code"])].copy()
+            industry_df["in_date"] = self._normalize_yyyymmdd(industry_df["in_date"], "in_date", self.industry_path)
+            industry_df["out_date"] = self._normalize_optional_yyyymmdd(industry_df["out_date"], "out_date", self.industry_path)
+            industry_df["_in_dt"] = pd.to_datetime(industry_df["in_date"].astype("string"), format="%Y%m%d", errors="coerce")
+            industry_df["_out_dt"] = pd.to_datetime(industry_df["out_date"].astype("string"), format="%Y%m%d", errors="coerce")
 
-        invalid_industry_rows = int(industry_df["_in_dt"].isna().sum())
-        if invalid_industry_rows:
-            self.logger.warning("industry one-hot 存在 %d 行无效 in_date，已剔除。", invalid_industry_rows)
-            industry_df = industry_df.loc[industry_df["_in_dt"].notna()].copy()
+            invalid_industry_rows = int(industry_df["_in_dt"].isna().sum())
+            if invalid_industry_rows:
+                self.logger.warning("industry one-hot 存在 %d 行无效 in_date，已剔除。", invalid_industry_rows)
+                industry_df = industry_df.loc[industry_df["_in_dt"].notna()].copy()
 
-        duplicate_rows = int(industry_df.duplicated(subset=["ts_code", "in_date", "out_date"], keep=False).sum())
-        if duplicate_rows:
-            self.logger.warning("industry one-hot 存在 %d 行重复 ts_code+in_date+out_date，保留最后一条。", duplicate_rows)
-            industry_df = industry_df.drop_duplicates(subset=["ts_code", "in_date", "out_date"], keep="last")
+            duplicate_rows = int(industry_df.duplicated(subset=["ts_code", "in_date", "out_date"], keep=False).sum())
+            if duplicate_rows:
+                self.logger.warning("industry one-hot 存在 %d 行重复 ts_code+in_date+out_date，保留最后一条。", duplicate_rows)
+                industry_df = industry_df.drop_duplicates(subset=["ts_code", "in_date", "out_date"], keep="last")
 
-        industry_feature_columns = tuple(column for column in industry_df.columns if column not in {"ts_code", "in_date", "out_date", "_in_dt", "_out_dt"})
-        industry_df = industry_df.sort_values(["_in_dt", "ts_code", "out_date"], kind="mergesort").reset_index(drop=True)
+            industry_feature_columns = tuple(column for column in industry_df.columns if column not in {"ts_code", "in_date", "out_date", "_in_dt", "_out_dt"})
+            industry_df = industry_df.sort_values(["_in_dt", "ts_code", "out_date"], kind="mergesort").reset_index(drop=True)
 
         self.logger.info(
             "特征表加载完成：namechange_rows=%d, suspend_rows=%d, adj_rows=%d, fundamentals_rows=%d, "
@@ -359,6 +370,47 @@ class WideTableDailyBarsBuilder:
             industry_feature_columns=industry_feature_columns,
             fundamental_columns=fundamental_columns,
         )
+
+    def _discover_daily_industry_columns(self) -> tuple[str, ...]:
+        """Discover industry one-hot column names from the first available daily file."""
+        def _walk_dirs(base_dir: Path) -> Iterable[Path]:
+            year_dirs = sorted(base_dir.glob("year=*"))
+            if year_dirs:
+                for yd in year_dirs:
+                    for md in sorted(yd.glob("month=*")):
+                        for pf in sorted(md.glob("*.parquet")):
+                            yield pf
+            else:
+                for md in sorted(base_dir.glob("month=*")):
+                    for pf in sorted(md.glob("*.parquet")):
+                        yield pf
+
+        for parquet_file in _walk_dirs(self.industry_path):
+            df = pd.read_parquet(parquet_file)
+            cols = tuple(
+                c for c in df.columns
+                if c not in ("trade_date", "ts_code") and c.startswith("L1_")
+            )
+            if cols:
+                self.logger.info("日度行业 one-hot 列数：%d", len(cols))
+                return cols
+        return ()
+
+    def _load_daily_industry_for_date(self, trade_date: int) -> pd.DataFrame:
+        """Load daily industry one-hot for a specific trade date."""
+        date_str = str(trade_date)
+        year = date_str[:4]
+        month = date_str[4:6]
+        # Try year=YYYY/month=MM/YYYYMMDD.parquet under industry_path
+        file_path = self.industry_path / f"year={year}" / f"month={month}" / f"{date_str}.parquet"
+        if not file_path.exists():
+            # Fallback: industry_path is already a year directory (month=MM/YYYYMMDD.parquet)
+            file_path = self.industry_path / f"month={month}" / f"{date_str}.parquet"
+        if not file_path.exists():
+            return pd.DataFrame(columns=["trade_date", "ts_code"])
+        df = pd.read_parquet(file_path)
+        df["ts_code"] = df["ts_code"].astype("string").str.strip()
+        return df.set_index("ts_code", drop=True)
 
     def _load_moneyflow_feature(self) -> pd.DataFrame:
         """Load cleaned MoneyFlow features keyed by ``trade_date`` + ``ts_code``."""
@@ -535,6 +587,9 @@ class WideTableDailyBarsBuilder:
         industry_df: pd.DataFrame,
         industry_feature_columns: Sequence[str],
     ) -> tuple[pd.DataFrame, int]:
+        if self._industry_is_daily:
+            return self._merge_daily_industry(daily_df, industry_feature_columns)
+
         industry_output_columns = ["in_date", "out_date", *industry_feature_columns]
         if industry_df.empty:
             aligned_features = pd.DataFrame(index=daily_df.index, columns=industry_output_columns)
@@ -585,6 +640,50 @@ class WideTableDailyBarsBuilder:
         for column in industry_feature_columns:
             if column in merged.columns:
                 merged[column] = merged[column].fillna(0).astype("int8")
+        return merged, matched_rows
+
+    def _merge_daily_industry(
+        self,
+        daily_df: pd.DataFrame,
+        industry_feature_columns: Sequence[str],
+    ) -> tuple[pd.DataFrame, int]:
+        unique_trade_dates = daily_df["trade_date"].drop_duplicates()
+        if len(unique_trade_dates) == 1:
+            trade_date = int(unique_trade_dates.iloc[0])
+            day_industry = self._load_daily_industry_for_date(trade_date)
+            ind_cols = [c for c in industry_feature_columns if c in day_industry.columns]
+            if ind_cols:
+                aligned = day_industry.reindex(daily_df["ts_code"])
+                aligned_features = aligned[ind_cols].reset_index(drop=True)
+            else:
+                aligned_features = pd.DataFrame(index=range(len(daily_df)), columns=list(industry_feature_columns))
+        else:
+            all_dfs = []
+            for td in unique_trade_dates:
+                td_int = int(td)
+                day_industry = self._load_daily_industry_for_date(td_int)
+                day_df = daily_df[daily_df["trade_date"] == td_int].copy()
+                ind_cols = [c for c in industry_feature_columns if c in day_industry.columns]
+                if ind_cols:
+                    aligned = day_industry.reindex(day_df["ts_code"])[ind_cols].reset_index(drop=True)
+                else:
+                    aligned = pd.DataFrame(index=range(len(day_df)), columns=list(industry_feature_columns))
+                aligned["_row_idx"] = day_df.index
+                all_dfs.append(aligned)
+            if all_dfs:
+                combined = pd.concat(all_dfs, ignore_index=True)
+                combined = combined.set_index("_row_idx").sort_index()
+                aligned_features = combined.reset_index(drop=True)
+            else:
+                aligned_features = pd.DataFrame(index=range(len(daily_df)), columns=list(industry_feature_columns))
+
+        for col in industry_feature_columns:
+            if col not in aligned_features.columns:
+                aligned_features[col] = 0
+            aligned_features[col] = pd.to_numeric(aligned_features[col], errors="coerce").fillna(0).astype("int8")
+
+        matched_rows = int((aligned_features.sum(axis=1) > 0).sum())
+        merged = pd.concat([daily_df.reset_index(drop=True), aligned_features], axis=1)
         return merged, matched_rows
 
     def _output_path_for(self, input_file: Path) -> Path:
