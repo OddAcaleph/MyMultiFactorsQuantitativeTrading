@@ -76,10 +76,12 @@ class NamechangeStProcessor:
         self,
         input_file: str | Path | None = None,
         output_file: str | Path | None = None,
+        extend_to_date: str | pd.Timestamp | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         self.input_file = Path(input_file or self.DEFAULT_INPUT_FILE)
         self.output_file = Path(output_file or self.DEFAULT_OUTPUT_FILE)
+        self.extend_to_date = pd.Timestamp(extend_to_date) if extend_to_date is not None else None
         self.logger = logger or logging.getLogger(self.__class__.__name__)
 
         if not self.input_file.exists():
@@ -148,6 +150,8 @@ class NamechangeStProcessor:
             raise ValueError("No valid namechange records remain after parsing start_date.")
 
         max_known_date = max(prepared["_start_dt"].max(), prepared["_end_dt"].max(), prepared["_ann_dt"].max())
+        if self.extend_to_date is not None and self.extend_to_date > max_known_date:
+            max_known_date = self.extend_to_date
         prepared["_effective_end_dt"] = prepared["_end_dt"].fillna(max_known_date)
 
         invalid_interval_rows = int((prepared["_effective_end_dt"] < prepared["_start_dt"]).sum())
@@ -217,11 +221,14 @@ class NamechangeStProcessor:
 
     @staticmethod
     def _classify_st_status(name: object) -> int:
-        normalized = "" if pd.isna(name) else str(name).strip().upper()
-        if normalized.startswith("*ST"):
+        normalized = "" if pd.isna(name) else str(name).strip()
+        normalized_upper = normalized.upper()
+        if normalized_upper.startswith("*ST"):
             return 2
-        if normalized.startswith("ST"):
+        if normalized_upper.startswith("ST"):
             return 1
+        if normalized.endswith("退"):
+            return 2
         return 0
 
     def _required_missing_mask(self, df: pd.DataFrame) -> pd.Series:
@@ -311,13 +318,23 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--log-level", default="INFO", help="Logging level, e.g. INFO or DEBUG.")
     parser.add_argument("--log-file", default=str(NamechangeStProcessor.DEFAULT_LOG_FILE), help="Log file path.")
+    parser.add_argument(
+        "--extend-to-date",
+        default=None,
+        help="Extend open-ended (end_date is null) ST records to this date (YYYYMMDD). "
+             "Defaults to the max date found in namechange data itself.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> NamechangeStProcessSummary:
     args = parse_args(argv)
     configure_logging(log_level=args.log_level, log_file=args.log_file)
-    processor = NamechangeStProcessor(input_file=args.input_file, output_file=args.output_file)
+    processor = NamechangeStProcessor(
+        input_file=args.input_file,
+        output_file=args.output_file,
+        extend_to_date=args.extend_to_date,
+    )
     return processor.process()
 
 

@@ -1,0 +1,30 @@
+{
+  "daily_bars_dir": "${PROJECT_ROOT}/data/cross_sectional_processd_data/wide_table_daily_bars",
+  "price_volume_factors_dir": "${PROJECT_ROOT}/data/cross_sectional_processd_data/price_volume_factors",
+  "moneyflow_factors_dir": "${PROJECT_ROOT}/data/cross_sectional_processd_data/moneyflow_factors",
+  "fundamental_factors_dir": "${PROJECT_ROOT}/data/cross_sectional_processd_data/fundamental_factors",
+  "industry_factors_dir": "${PROJECT_ROOT}/data/cross_sectional_processd_data/industry_factors",
+  "labels_dir": "${PROJECT_ROOT}/data/generated_label/daily_labels",
+  "feature_cols": [
+    "amount",
+    "amplitude_5_cc_processed",
+    "close",
+    "ma60_bias_cc_processed",
+    "amplitude_cc_processed",
+    "high",
+    "industry_ret_1_cc_processed",
+    "vol",
+    "industry_ret_5_cc_processed",
+    "pct_chg",
+    "industry_ret_20_cc_processed",
+    "volatility_60_cc_processed",
+    "vol_ratio_20_cc_processed",
+    "ma20_bias_cc_processed",
+    "low",
+    "amplitude_20_cc_processed"
+  ],
+  "label_name": "label_5d",
+  "include_label": true,
+  "dropna_label": true,
+  "keep_original_code": true
+}

@@ -183,7 +183,7 @@ if [[ "${GENERATE_FEATURES}" == "1" ]]; then
   if [[ "${STEP_STATUS[generate_price_volume_factors]:-1}" == "0" && "${STEP_STATUS[generate_fundamental_factors]:-1}" == "0" ]]; then
     run_step generate_industry_factors \
       python3 "${FEATURE_GENERATOR_PATH}/industry_feature_generator.py" \
-        --industry-file "${CLEANED_DATA_DIR}/industry/industry.parquet" \
+        --industry-file "${PROCESSED_DATA_DIR}/industry/daily_onehot" \
         --price-volume-dir "${FEATURES_DATA_DIR}/price_volume_factors" \
         --fundamental-dir "${FEATURES_DATA_DIR}/fundamental_factors" \
         --output-dir "${FEATURES_DATA_DIR}/industry_factors" \
@@ -210,7 +210,7 @@ if [[ "${BUILD_WIDE_TABLE_DAILY_BARS}" == "1" ]]; then
       --adj-factor-file "${CLEANED_DATA_DIR}/adj_factors/adj_factors.parquet" \
       --fundamentals-file "${CLEANED_DATA_DIR}/fundamentals/fundamentals.parquet" \
       --moneyflow-file "${CLEANED_DATA_DIR}/moneyflow/moneyflow.parquet" \
-      --industry-file "${PROCESSED_DATA_DIR}/industry/industry_onehot.parquet" \
+      --industry-file "${PROCESSED_DATA_DIR}/industry/daily_onehot" \
       --output-dir "${PROCESSED_DATA_DIR}/wide_table_daily_bars" \
       "${DATE_ARGS[@]}" \
       --log-level "${LOG_LEVEL}" \

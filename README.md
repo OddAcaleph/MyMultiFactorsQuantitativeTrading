@@ -40,7 +40,7 @@
 
 **MyMultiFactorsQuantitativeTrading** 是一个端到端的A股量化投研平台，支持多因子模型构建、XGBoost监督学习、以及贴近真实交易规则的回测验证。
 
-- **版本**：v0.0.1
+- **版本**：v0.1.0
 - **定位**：完整的量化投研流水线
 - **支持市场**：A股
 - **核心算法**：XGBoost 梯度提升树
@@ -48,7 +48,7 @@
 ### 版本历史
 
 - **v0.0.1**：基础组件和流水线（数据获取、清洗、处理、特征生成、标签生成、XGBoost训练预测、简单回测）
-- **最新版本**：多因子量化交易系统初始化版本
+- **v0.1.0**：Walk-Forward滚动训练、增强Alpha因子库（20+）、完整A股回测约束体系（行业/流动性/ST/次新股）、波动率加权、动态仓位管理、板块差异化涨跌停
 
 ---
 
@@ -56,7 +56,7 @@
 
 1. **完整的端到端流水线**：从数据获取到回测验证的完整量化投研流程
 2. **贴近真实的回测引擎**：考虑A股T+1、涨跌停、100股整数倍等特有规则
-3. **丰富的因子库**：61个特征，涵盖价量、基本面、资金流、行业等多个维度
+3. **丰富的因子库**：66+个特征，涵盖价量、基本面、资金流、行业、增强Alpha等多个维度
 4. **严格的泄露控制**：标签计算、回测信号延迟等机制避免未来函数
 5. **Qlib生态兼容**：自定义数据加载器无缝对接Qlib框架
 6. **完善的文档**：每个模块都有详细的使用文档和设计说明
@@ -64,32 +64,44 @@
 8. **可配置性强**：所有关键参数通过JSON配置文件管理
 9. **断点续传**：数据获取、处理等步骤都支持断点续传，提高效率
 10. **数据只读原则**：所有处理步骤都不修改原始数据，结果写入新目录
+11. **Walk-Forward滚动训练**：支持滚动/扩展窗口训练，更贴近实盘的模型评估
+12. **完整约束体系**：行业约束、流动性过滤、ST/停牌/次新股过滤、个股权重上限
+13. **高级仓位管理**：波动率加权、目标波动率动态仓位、离散度动态仓位
+14. **板块差异化涨跌停**：主板/创业板/科创板/北交所不同涨跌幅限制
 
 ---
 
 ## 目录结构
 
 ```
-/opt/tiger/qyd/qyd/
+MyMultiFactorsQuantitativeTrading/
 ├── conf/                          # 配置文件目录
 │   ├── parquet_loader_config.json          # Parquet数据加载器配置
 │   ├── xgboost_trainer_config.json         # XGBoost训练器配置
+│   ├── xgboost_trainer_enhanced_alpha_config.json  # 增强Alpha训练配置
 │   ├── xgboost_inferencer_config.json      # XGBoost推理器配置
 │   ├── simple_backtester_config.json       # 简单回测器配置
 │   ├── preparatory_backtester_config.json  # 预备回测器配置
 │   ├── simple_backtest_grid_search_config.json      # 回测网格搜索配置
-│   └── xgboost_train_backtest_grid_search_config.json # 训练+回测网格搜索配置
+│   ├── xgboost_train_backtest_grid_search_config.json # 训练+回测网格搜索
+│   ├── xgboost_train_backtest_grid_search_phase2.json # 第二阶段网格搜索
+│   ├── xgboost_train_backtest_grid_search_phase3.json # 第三阶段网格搜索
+│   ├── walk_forward_config.json            # Walk-Forward训练配置
+│   └── experiments/                        # 实验变体配置（不纳入主版本）
 │
 ├── src/                           # 源代码目录
 │   ├── trainer/                   # 模型训练模块
 │   │   ├── xgboost_trainer.py              # XGBoost训练器核心类
 │   │   ├── xgboost_inferencer.py           # XGBoost推理器核心类
+│   │   ├── walk_forward_trainer.py         # Walk-Forward滚动训练器
 │   │   ├── run_xgboost_training.py         # 训练命令行入口
 │   │   ├── run_xgboost_inference.py        # 推理命令行入口
+│   │   ├── run_walk_forward_training.py    # Walk-Forward训练入口
+│   │   ├── run_walk_forward_backtest.py    # Walk-Forward回测入口
 │   │   └── run_xgboost_train_backtest_grid_search.py  # 训练+回测网格搜索
 │   │
 │   ├── backtester/                # 回测模块
-│   │   ├── simple_backtester.py             # 简单回测器（真实交易规则）
+│   │   ├── simple_backtester.py             # 简单回测器（真实交易规则+约束体系）
 │   │   ├── preparatory_backtester.py        # 预备回测器（快速验证）
 │   │   ├── run_simple_backtest.py          # 简单回测命令行入口
 │   │   ├── run_preparatory_backtest.py      # 预备回测命令行入口
@@ -101,7 +113,7 @@
 │       ├── dataset_fetcher/                # 数据获取模块
 │       ├── dataset_cleaner/                # 数据清洗模块
 │       ├── dataset_processor/              # 数据处理模块
-│       ├── features_generator/             # 特征生成模块
+│       ├── features_generator/             # 特征生成模块（含增强Alpha）
 │       ├── cross_sectional_processor/      # 横截面处理模块
 │       ├── label_generator/                # 标签生成模块
 │       ├── dataset_generator/              # 数据集生成模块
@@ -115,11 +127,17 @@
 │   ├── cross_sectional_processd_data/  # 横截面处理后数据
 │   └── generated_label/           # 生成的标签数据
 │
-├── scripts/                       # 脚本目录
+├── scripts/                       # 脚本目录（可复用工具）
 │   ├── data_pipeline/             # 数据流水线脚本
-│   ├── ic_validate/               # IC验证脚本
-│   ├── search/                    # 网格搜索脚本
-│   └── design/                    # 设计文档
+│   ├── experiments/               # 一次性实验脚本（不提交）
+│   ├── run_walk_forward.py        # Walk-Forward训练+回测主脚本
+│   ├── wf_grid_search.py          # WF网格搜索主框架
+│   ├── wf_grid_search_scheduler.py # WF网格搜索并行调度器
+│   ├── wf_grid_search_worker.py   # WF网格搜索Worker
+│   ├── start_wf_grid_search.py    # WF网格搜索启动器
+│   ├── analyze_enhanced_alpha_ic.py # 增强Alpha IC分析工具
+│   ├── worst_performer_replacement_backtest.py # 最差表现替换策略
+│   └── update_wide_table_st.py    # 宽表ST标记更新工具
 │
 ├── docs/                          # 文档目录
 ├── models/                        # 模型目录
@@ -184,6 +202,7 @@ bash scripts/data_pipeline/daily_data_pipeline.sh 20260601 20260630
 bash scripts/data_pipeline/data_fetch_pipeline.sh 20260601 20260630
 bash scripts/data_pipeline/data_process_pipeline.sh 20260601 20260630
 bash scripts/data_pipeline/factor_calculation_pipeline.sh 20260601 20260630
+bash scripts/data_pipeline/enhanced_alpha_factors_pipeline.sh 20260601 20260630
 bash scripts/data_pipeline/label_calculation_pipeline.sh 20260601 20260630
 ```
 
@@ -249,6 +268,25 @@ python "/opt/tiger/qyd/qyd/src/trainer/run_xgboost_training.py" \
 - **训练集**：2000-01-01 ~ 2020-12-31
 - **验证集**：2021-01-01 ~ 2022-12-31
 - **测试集**：2023-01-01 ~ 2025-12-31
+
+### Walk-Forward滚动训练
+
+```bash
+# Walk-Forward训练 + 回测（推荐，更贴近实盘评估）
+PYTHONPATH="src" python scripts/run_walk_forward.py \
+  --config conf/walk_forward_config.json
+
+# Walk-Forward网格搜索（并行）
+PYTHONPATH="src" python scripts/start_wf_grid_search.py \
+  --config conf/walk_forward_config.json \
+  --n-workers 4
+```
+
+**特点**：
+- 支持滚动窗口（rolling）和扩展窗口（expanding）两种模式
+- 内存优化：一次性加载全量特征，按窗口切片训练
+- 各窗口测试集预测拼接后进行连续回测
+- 支持断点续跑和结果缓存
 
 ### 模型推理
 
@@ -464,6 +502,13 @@ ParquetLoader → DataHandlerLP → DatasetH → XGBRegressor
 - Dropout策略：每次调仓卖出最弱的N只，买入新的高分股票
 - 调仓频率：日/周/月/每N个交易日
 
+**A股约束体系**（可配置）：
+- 股票池过滤：ST股过滤、停牌过滤、次新股过滤、流动性过滤（20日均成交额）
+- 行业约束：单行业权重上限、行业数量上限、行业分层抽样
+- 仓位管理：等权/波动率加权、单票权重上限、成交额占比限制
+- 动态仓位：目标波动率、分数阈值、截面离散度三种方法，可持有现金
+- 板块涨跌停：主板(10%)/创业板科创板(20%)/北交所(30%)差异化处理
+
 **绩效指标**：
 - 收益率：总收益、年化收益、日胜率
 - 风险指标：年化波动率、最大回撤、Sharpe、Sortino、Calmar
@@ -579,7 +624,7 @@ ParquetLoader → DataHandlerLP → DatasetH → XGBRegressor
 
 ## 特征工程
 
-### 特征总数：61个
+### 特征总数：66+个
 
 | 类别 | 数量 | 说明 |
 |------|------|------|
@@ -589,6 +634,18 @@ ParquetLoader → DataHandlerLP → DatasetH → XGBRegressor
 | 资金流因子 | 13 | 主力净流入、散户净流入、资金流加速度等 |
 | 行业因子 | 8 | 行业收益、相对强弱、行业中性化指标 |
 | 衍生因子 | 1 | roe_roa_gap |
+| 增强Alpha因子 | 5+ | MACD、RSI、52周新高距离、毛利率变化、营收同比加速度（完整20+因子在增强Alpha模块） |
+
+### 增强Alpha因子
+
+**位置**：`src/utils/features_generator/enhanced_alpha_feature_generator.py`
+
+提供进攻性Alpha因子，补充原有防御性因子体系：
+
+- **动量类**：12月/6月动量（skip 1月/2周）、52周新高距离、RSI、Williams %R、MACD、连涨连跌天数
+- **量价类**：OBV能量潮、量价趋势、换手率、成交量动量
+- **资金流类**：主力净流入5日变化、20日趋势、价量背离
+- **基本面动量**：ROE环比变化、营收同比加速度、毛利率变化
 
 ### 特征处理流程
 
@@ -668,6 +725,8 @@ A: 可能原因：
 5. **监控告警**：添加模型性能监控、数据质量监控
 6. **参数优化**：使用贝叶斯优化等方法进行超参数调优
 7. **多策略融合**：开发多个策略并进行组合优化
+8. **Walk-Forward深化**：更多窗口配置、自适应窗口、在线学习
+9. **约束体系完善**：更多交易规则模拟、融券做空、打新收益等
 
 ---
 

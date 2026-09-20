@@ -4,9 +4,10 @@
 
 **MyMultiFactorsQuantitativeTrading** is an end-to-end A-share multi-factor quantitative trading research platform. It implements a full pipeline from data fetching, cleaning, feature engineering, XGBoost model training, to realistic backtesting with A-share trading rules (T+1, board lots, price limits, etc.).
 
-**Version**: v0.0.1
+**Version**: v0.1.0
 **Core algorithm**: XGBoost gradient boosted trees on top of Qlib's data infrastructure
 **Market coverage**: A-shares (Tushare data source)
+**Key new features in v0.1.0**: Walk-forward training, enhanced alpha factors (20+), full A-share backtest constraints (industry, liquidity, ST/suspend, new stock filter), volatility-weighted position sizing, dynamic position management
 
 ### Architecture
 
@@ -20,12 +21,12 @@ Key modules under `src/`:
 
 | Module | Path | Responsibility |
 |--------|------|----------------|
-| Trainer | `src/trainer/` | XGBoost training, inference, grid search |
-| Backtester | `src/backtester/` | Preparatory (fast) and simple (realistic) backtests |
+| Trainer | `src/trainer/` | XGBoost training, inference, grid search, walk-forward training |
+| Backtester | `src/backtester/` | Preparatory (fast) and simple (realistic) backtests with A-share constraints |
 | Dataset Fetcher | `src/utils/dataset_fetcher/` | Tushare API data download |
 | Dataset Cleaner | `src/utils/dataset_cleaner/` | Deduplication, OHLC validation |
 | Dataset Processor | `src/utils/dataset_processor/` | Wide-table joins (ST, suspend, adj, fundamentals, industry) |
-| Features Generator | `src/utils/features_generator/` | 61 factors across price/volume, fundamental, moneyflow, industry |
+| Features Generator | `src/utils/features_generator/` | 66+ factors across price/volume, fundamental, moneyflow, industry, enhanced alpha |
 | Cross-sectional Processor | `src/utils/cross_sectional_processor/` | Winsorization + Z-score per trading day |
 | Label Generator | `src/utils/label_generator/` | Forward return and rank labels (1d–20d horizons) |
 | Dataset Generator | `src/utils/dataset_generator/` | ParquetLoader implementing Qlib DataLoader interface |
@@ -40,12 +41,17 @@ Each module has a `run_*.py` CLI entry point:
 - `src/trainer/run_xgboost_training.py`
 - `src/trainer/run_xgboost_inference.py`
 - `src/trainer/run_xgboost_train_backtest_grid_search.py`
+- `src/trainer/run_walk_forward_training.py` — walk-forward rolling training
+- `src/trainer/run_walk_forward_backtest.py` — walk-forward backtest (stitched predictions)
 - `src/backtester/run_simple_backtest.py`
 - `src/backtester/run_preparatory_backtest.py`
 - `src/backtester/run_simple_backtest_grid_search.py`
 - `src/utils/ic_validator/run_ic_validation.py` (run as `python -m utils.ic_validator.run_ic_validation`)
 
 Shell pipeline scripts are in `scripts/data_pipeline/`.
+
+Reusable utility scripts are in `scripts/`. One-off experiment scripts are in `scripts/experiments/` and are not committed.
+Experiment config variants are in `conf/experiments/`.
 
 ---
 
@@ -88,6 +94,27 @@ python src/trainer/run_xgboost_inference.py [--start-time ... --end-time ...] [-
 
 Default train/valid/test split: 2000–2020 / 2021–2022 / 2023–2025.
 
+### Walk-Forward Training
+
+```bash
+# Walk-forward training + backtest (uses conf/walk_forward_config.json)
+python scripts/run_walk_forward.py --config conf/walk_forward_config.json
+
+# Walk-forward grid search (parallel with scheduler + workers)
+python scripts/start_wf_grid_search.py --config conf/walk_forward_config.json --n-workers 4
+```
+
+Walk-forward supports rolling and expanding windows. Each window trains independently and test-set predictions are stitched together for a single continuous backtest.
+
+### Enhanced Alpha Factors
+
+```bash
+# Generate enhanced alpha factors (momentum, volume-price, moneyflow, fundamental momentum)
+bash scripts/data_pipeline/enhanced_alpha_factors_pipeline.sh [start_date] [end_date]
+```
+
+Adds ~20 offensive alpha factors on top of the base 61 factors: MACD, RSI, 52-week high distance, OBV, revenue acceleration, gross margin change, etc.
+
 ### Backtesting
 
 ```bash
@@ -96,6 +123,14 @@ python src/backtester/run_simple_backtest.py \
   --prediction-path outputs/.../pred_test.parquet \
   --topk 50 --n-drop 5 --plot
 ```
+
+**Backtest constraint features** (all configurable via `strategy` in config):
+- **Stock pool filters**: ST filter (`filter_st`), suspend filter (`filter_suspend`), new stock filter (`filter_new_stock_days`), liquidity filter (`min_avg_amount_20d`)
+- **Industry constraints**: max industry weight (`max_industry_weight`), max industry count (`max_industry_count`), industry-stratified sampling
+- **Position sizing**: equal weight (default), volatility-weighted (`vol_weight_enabled`), single-stock weight cap (`max_single_weight`)
+- **Dynamic position**: target-vol, score-threshold, and dispersion-based methods that can reduce exposure to cash
+- **Board-specific price limits**: different limit-up/down thresholds for main board (10%), ChiNext/STAR (20%), BSE (30%)
+- **Sell criteria**: lowest predicted score (default) or worst holding return (`drop_criteria`)
 
 ### Grid Search
 
@@ -171,18 +206,23 @@ Three test files: `test_xgboost_trainer.py`, `test_preparatory_backtester.py`, `
 
 ## 6. Configuration
 
-All configuration is JSON-based in `conf/`. Key files:
+All configuration is JSON-based in `conf/`. Key files in `conf/` root:
 
 | Config file | Purpose |
 |-------------|---------|
-| `parquet_loader_config.json` | Data source paths, 61 feature columns, label selection |
+| `parquet_loader_config.json` | Data source paths, 66+ feature columns, label selection |
 | `xgboost_trainer_config.json` | Train/valid/test segments, model params, output paths, GPU preference |
+| `xgboost_trainer_enhanced_alpha_config.json` | Training config with enhanced alpha factors |
 | `xgboost_inferencer_config.json` | Inference model path, time range, output path |
 | `simple_backtester_config.json` | Backtest params: topk, n_drop, costs, slippage, limit rules, lot size |
 | `preparatory_backtester_config.json` | Fast preparatory backtest config |
 | `simple_backtest_grid_search_config.json` | Grid search over backtest parameters |
 | `xgboost_train_backtest_grid_search_config.json` | Combined train + backtest grid search |
 | `xgboost_train_backtest_grid_search_phase2.json` | Phase 2 random search (200 trials) config |
+| `xgboost_train_backtest_grid_search_phase3.json` | Phase 3 random search config |
+| `walk_forward_config.json` | Walk-forward training + backtest (rolling windows) |
+
+Experiment-specific config variants live in `conf/experiments/` (walk-forward variants, full-constraint backtests, top16 factor configs, etc.).
 
 ### Config System Details
 

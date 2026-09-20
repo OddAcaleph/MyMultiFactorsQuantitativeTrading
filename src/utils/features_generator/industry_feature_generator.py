@@ -103,7 +103,7 @@ class IndustryFeatureGenerator:
         end_date: str | int | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
-        self.industry_file = Path(industry_file or self.DEFAULT_INDUSTRY_FILE)
+        self.industry_path = Path(industry_file or self.DEFAULT_INDUSTRY_FILE)
         self.price_volume_dir = Path(price_volume_dir or self.DEFAULT_PRICE_VOLUME_DIR)
         self.fundamental_dir = Path(fundamental_dir or self.DEFAULT_FUNDAMENTAL_DIR)
         self.output_dir = Path(output_dir or self.DEFAULT_OUTPUT_DIR)
@@ -111,6 +111,7 @@ class IndustryFeatureGenerator:
         self.end_date = self._parse_optional_date(end_date, "end_date")
         self.logger = logger or logging.getLogger(self.__class__.__name__)
 
+        self._industry_is_daily = self.industry_path.is_dir()
         self._validate_inputs()
 
     def process(self) -> IndustryFeatureGenerateSummary:
@@ -125,15 +126,22 @@ class IndustryFeatureGenerator:
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.logger.info(
-            "开始生成行业特征因子：industry=%s, price_volume=%s, fundamental=%s, output=%s",
-            self.industry_file,
+            "开始生成行业特征因子：industry=%s (%s), price_volume=%s, fundamental=%s, output=%s",
+            self.industry_path,
+            "daily" if self._industry_is_daily else "static",
             self.price_volume_dir,
             self.fundamental_dir,
             self.output_dir,
         )
         self.logger.info("输入 industry/price_volume/fundamental parquet 均按只读处理，生成结果仅写入 features_data 对应目录。")
 
-        industry_df, l1_onehot_columns = self._load_industry_mapping()
+        static_industry_df = None
+        l1_onehot_columns: tuple[str, ...] = ()
+        if not self._industry_is_daily:
+            static_industry_df, l1_onehot_columns = self._load_industry_mapping()
+        else:
+            l1_onehot_columns = self._discover_daily_industry_columns()
+            self.logger.info("日频行业 L1 分类发现：categories=%d", len(l1_onehot_columns))
 
         files_written = 0
         fundamental_files_read = 0
@@ -165,6 +173,11 @@ class IndustryFeatureGenerator:
                 self.logger.warning("未找到同日财务因子文件：%s；当日行业中性化财务因子将输出 NaN。", fundamental_file)
                 fundamental_df = self._empty_fundamental_frame()
 
+            if self._industry_is_daily:
+                industry_df = self._load_daily_industry_for_date(trade_date)
+            else:
+                industry_df = static_industry_df
+
             output_df = self._generate_daily_features(price_df, fundamental_df, industry_df, l1_onehot_columns)
             self._log_daily_source_coverage(trade_date, price_df, fundamental_df, output_df)
             rows_written += len(output_df)
@@ -173,7 +186,7 @@ class IndustryFeatureGenerator:
             files_written += 1
 
         summary = IndustryFeatureGenerateSummary(
-            industry_input_file=self.industry_file,
+            industry_input_file=self.industry_path,
             price_volume_input_dir=self.price_volume_dir,
             fundamental_input_dir=self.fundamental_dir,
             output_dir=self.output_dir,
@@ -196,8 +209,8 @@ class IndustryFeatureGenerator:
         return summary
 
     def _validate_inputs(self) -> None:
-        if not self.industry_file.exists() or not self.industry_file.is_file():
-            raise FileNotFoundError(f"Industry input file does not exist: {self.industry_file}")
+        if not self.industry_path.exists():
+            raise FileNotFoundError(f"Industry input does not exist: {self.industry_path}")
         if not self.price_volume_dir.exists() or not self.price_volume_dir.is_dir():
             raise NotADirectoryError(f"Price-volume input directory does not exist or is not a directory: {self.price_volume_dir}")
         if not self.fundamental_dir.exists() or not self.fundamental_dir.is_dir():
@@ -206,8 +219,8 @@ class IndustryFeatureGenerator:
             raise ValueError(f"start_date must be <= end_date, got {self.start_date} > {self.end_date}")
 
     def _load_industry_mapping(self) -> tuple[pd.DataFrame, tuple[str, ...]]:
-        df = pd.read_parquet(self.industry_file, columns=list(self.INDUSTRY_REQUIRED_COLUMNS))
-        self._validate_columns(df.columns, self.INDUSTRY_REQUIRED_COLUMNS, self.industry_file)
+        df = pd.read_parquet(self.industry_path, columns=list(self.INDUSTRY_REQUIRED_COLUMNS))
+        self._validate_columns(df.columns, self.INDUSTRY_REQUIRED_COLUMNS, self.industry_path)
 
         prepared = df.copy().reset_index(names="_raw_row")
         prepared[self.INDUSTRY_KEY_COLUMN] = prepared[self.INDUSTRY_KEY_COLUMN].astype("string").str.strip()
@@ -254,6 +267,70 @@ class IndustryFeatureGenerator:
             output_files.append(file_path)
         self.logger.info("行业因子待输出交易日文件数=%d", len(output_files))
         return output_files
+
+    def _discover_daily_industry_columns(self) -> tuple[str, ...]:
+        sample_file = self._find_daily_industry_sample_file()
+        if sample_file is None:
+            raise FileNotFoundError(
+                f"No daily industry parquet files found under {self.industry_path}"
+            )
+        df = pd.read_parquet(sample_file)
+        l1_cols = sorted(c for c in df.columns if c.startswith("L1_"))
+        if not l1_cols:
+            raise ValueError(f"No L1_* columns found in daily industry file: {sample_file}")
+        return tuple(l1_cols)
+
+    def _find_daily_industry_sample_file(self) -> Path | None:
+        candidates = sorted(self.industry_path.glob("year=*/month=*/*.parquet"))
+        if candidates:
+            return candidates[0]
+        candidates = sorted(self.industry_path.glob("month=*/*.parquet"))
+        if candidates:
+            return candidates[0]
+        candidates = sorted(self.industry_path.glob("*.parquet"))
+        if candidates:
+            return candidates[0]
+        return None
+
+    def _load_daily_industry_for_date(self, trade_date: int) -> pd.DataFrame:
+        trade_date_text = f"{int(trade_date):08d}"
+        year = trade_date_text[:4]
+        month = trade_date_text[4:6]
+        file_name = f"{trade_date_text}.parquet"
+
+        candidate_paths = [
+            self.industry_path / f"year={year}" / f"month={month}" / file_name,
+            self.industry_path / f"month={month}" / file_name,
+            self.industry_path / file_name,
+        ]
+
+        industry_file = None
+        for p in candidate_paths:
+            if p.exists():
+                industry_file = p
+                break
+
+        if industry_file is None:
+            self.logger.warning("未找到 trade_date=%s 的日频行业文件，当日行业因子将全部为空。", trade_date_text)
+            return pd.DataFrame(columns=[self.INDUSTRY_KEY_COLUMN, self.INDUSTRY_LEVEL_COLUMN])
+
+        df = pd.read_parquet(industry_file)
+        l1_cols = [c for c in df.columns if c.startswith("L1_")]
+        if not l1_cols:
+            return pd.DataFrame(columns=[self.INDUSTRY_KEY_COLUMN, self.INDUSTRY_LEVEL_COLUMN])
+
+        df["ts_code"] = df["ts_code"].astype("string").str.strip()
+        l1_names = [c.removeprefix("L1_") for c in l1_cols]
+        import numpy as np
+        l1_array = np.array(l1_names, dtype=object)
+        l1_values = df[l1_cols].to_numpy(dtype=bool)
+        has_industry = l1_values.any(axis=1)
+        l1_name_series = pd.Series(pd.NA, index=df.index, dtype="string")
+        if has_industry.any():
+            idx = l1_values.argmax(axis=1)
+            l1_name_series[has_industry] = pd.array(l1_array[idx[has_industry]], dtype="string")
+        df[self.INDUSTRY_LEVEL_COLUMN] = l1_name_series
+        return df[[self.INDUSTRY_KEY_COLUMN, self.INDUSTRY_LEVEL_COLUMN]]
 
     def _load_price_volume_features(self, parquet_file: Path) -> pd.DataFrame:
         df = pd.read_parquet(parquet_file)

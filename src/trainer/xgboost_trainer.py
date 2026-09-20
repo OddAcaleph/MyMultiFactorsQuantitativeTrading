@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import warnings
 from pathlib import Path
@@ -11,7 +12,7 @@ import numpy as np
 import pandas as pd
 from qlib.data.dataset import DatasetH
 from qlib.data.dataset.handler import DataHandlerLP
-from xgboost import XGBRegressor
+from xgboost import XGBRanker, XGBRegressor
 
 from utils import ParquetLoader, load_loader_config, load_trainer_config
 
@@ -46,6 +47,7 @@ class XGBoostTrainer:
         moneyflow_factors_dir: str | Path | None = None,
         fundamental_factors_dir: str | Path | None = None,
         industry_factors_dir: str | Path | None = None,
+        enhanced_alpha_factors_dir: str | Path | None = None,
         labels_dir: str | Path | None = None,
         prefer_gpu: bool | None = None,
         model_dir: str | Path | None = None,
@@ -86,6 +88,7 @@ class XGBoostTrainer:
         self.moneyflow_factors_dir = moneyflow_factors_dir or self.loader_config.get("moneyflow_factors_dir")
         self.fundamental_factors_dir = fundamental_factors_dir or self.loader_config.get("fundamental_factors_dir")
         self.industry_factors_dir = industry_factors_dir or self.loader_config.get("industry_factors_dir")
+        self.enhanced_alpha_factors_dir = enhanced_alpha_factors_dir or self.loader_config.get("enhanced_alpha_factors_dir")
         self.labels_dir = labels_dir or self.loader_config.get("labels_dir")
 
         self.segments = self._normalize_segments(segments or trainer_config.get("segments"))
@@ -131,6 +134,7 @@ class XGBoostTrainer:
             moneyflow_factors_dir=self.moneyflow_factors_dir,
             fundamental_factors_dir=self.fundamental_factors_dir,
             industry_factors_dir=self.industry_factors_dir,
+            enhanced_alpha_factors_dir=self.enhanced_alpha_factors_dir,
             labels_dir=self.labels_dir,
             feature_cols=self.feature_cols,
             label_horizon=self.label_horizon,
@@ -159,9 +163,32 @@ class XGBoostTrainer:
         return self.dataset.prepare(segment)
 
     def prepare_xy(self, segment: str) -> tuple[pd.DataFrame, pd.Series]:
-        """Prepare feature matrix and label vector for one segment."""
+        """Prepare feature matrix and label vector for one segment.
 
-        df = self.prepare_segment(segment)
+        Loads directly from ParquetLoader to avoid Qlib DataHandlerLP caching
+        the full date range in memory (which can double peak memory).
+        """
+
+        start, end = self.segments[segment]
+        if self.loader is None:
+            self.loader = ParquetLoader(
+                daily_bars_dir=self.daily_bars_dir,
+                price_volume_factors_dir=self.price_volume_factors_dir,
+                moneyflow_factors_dir=self.moneyflow_factors_dir,
+                fundamental_factors_dir=self.fundamental_factors_dir,
+                industry_factors_dir=self.industry_factors_dir,
+                enhanced_alpha_factors_dir=self.enhanced_alpha_factors_dir,
+                labels_dir=self.labels_dir,
+                feature_cols=self.feature_cols,
+                label_horizon=self.label_horizon,
+                label_name=self.label_name,
+                label_cols=self.label_cols,
+                include_label=True,
+                dropna_label=True,
+                keep_original_code=self.keep_original_code,
+                config_path=self.loader_config_path,
+            )
+        df = self.loader.load(self.instruments, start_time=start, end_time=end)
         return self.split_feature_label(df, label_name=self.label_name)
 
     @staticmethod
@@ -197,10 +224,8 @@ class XGBoostTrainer:
         x_train, y_train = self.prepare_xy("train")
         x_valid, y_valid = self.prepare_xy("valid")
 
-        # 释放 dataset/handler/loader 中的大对象，节省训练期间内存
-        self.dataset = None
-        self.handler = None
         self.loader = None
+        gc.collect()
 
         fit_attempts = []
         if self.prefer_gpu and self._gpu_available():
@@ -210,15 +235,27 @@ class XGBoostTrainer:
         last_error: Exception | None = None
         for device_name, params in fit_attempts:
             try:
-                self.model = XGBRegressor(**params)
-                self.model.fit(
-                    x_train,
-                    y_train,
-                    eval_set=[(x_valid, y_valid)],
-                    verbose=verbose,
-                )
+                obj = params.get("objective", "")
+                if obj.startswith("rank:"):
+                    self.model = XGBRanker(**params)
+                    train_group = self._group_sizes(x_train)
+                    # Skip eval_set for ranking with float labels: XGBoost's
+                    # default ranking eval metric needs integer relevance labels.
+                    self.model.fit(
+                        x_train, y_train,
+                        group=train_group,
+                        verbose=verbose,
+                    )
+                else:
+                    self.model = XGBRegressor(**params)
+                    self.model.fit(
+                        x_train, y_train,
+                        eval_set=[(x_valid, y_valid)],
+                        verbose=verbose,
+                    )
                 self.device_used = device_name
                 del x_train, y_train, x_valid, y_valid
+                gc.collect()
                 return self.model
             except Exception as exc:
                 last_error = exc
@@ -231,6 +268,12 @@ class XGBoostTrainer:
                 raise
 
         raise RuntimeError("XGBoost training failed on all available devices") from last_error
+
+    @staticmethod
+    def _group_sizes(x: pd.DataFrame) -> list[int]:
+        """Return group sizes for ranking (one group per trading day)."""
+        dates = x.index.get_level_values("datetime")
+        return list(pd.Series(dates).value_counts().sort_index().values)
 
     @staticmethod
     def _gpu_available() -> bool:

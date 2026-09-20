@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--score-col", default=None, help="Prediction score column. Defaults to columns.score.")
     parser.add_argument("--topk", type=int, default=None, help="Number of target holdings. Overrides strategy.topk.")
     parser.add_argument("--n-drop", type=int, default=None, help="Number of weakest sell candidates. Overrides strategy.n_drop.")
+    parser.add_argument("--drop-criteria", default=None, choices=["score", "return"], help="Criteria for dropping stocks: 'score' (lowest pred) or 'return' (worst holding return).")
     parser.add_argument("--account", type=float, default=None, help="Initial cash/account value.")
     parser.add_argument(
         "--benchmark",
@@ -121,7 +122,7 @@ def build_overrides(args: argparse.Namespace) -> dict[str, Any]:
     if column_overrides:
         overrides["columns"] = deep_merge(config.get("columns", {}), column_overrides)
 
-    strategy_overrides = {"topk": args.topk, "n_drop": args.n_drop}
+    strategy_overrides = {"topk": args.topk, "n_drop": args.n_drop, "drop_criteria": args.drop_criteria}
     strategy_overrides = {key: value for key, value in strategy_overrides.items() if value is not None}
     if strategy_overrides:
         overrides["strategy"] = deep_merge(config.get("strategy", {}), strategy_overrides)

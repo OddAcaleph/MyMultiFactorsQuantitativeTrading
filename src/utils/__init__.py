@@ -10,6 +10,7 @@ from .config import (
     DEFAULT_SIMPLE_BACKTEST_GRID_SEARCH_CONFIG_PATH,
     DEFAULT_SIMPLE_BACKTESTER_CONFIG_PATH,
     DEFAULT_TRAINER_CONFIG_PATH,
+    DEFAULT_WALK_FORWARD_CONFIG_PATH,
     DEFAULT_XGBOOST_TRAIN_BACKTEST_GRID_SEARCH_CONFIG_PATH,
     PROJECT_ROOT,
     deep_merge,
@@ -20,6 +21,7 @@ from .config import (
     load_simple_backtest_grid_search_config,
     load_simple_backtester_config,
     load_trainer_config,
+    load_walk_forward_config,
     load_xgboost_train_backtest_grid_search_config,
     resolve_path,
 )
@@ -46,6 +48,7 @@ __all__ = [
     "DEFAULT_SIMPLE_BACKTEST_GRID_SEARCH_CONFIG_PATH",
     "DEFAULT_SIMPLE_BACKTESTER_CONFIG_PATH",
     "DEFAULT_TRAINER_CONFIG_PATH",
+    "DEFAULT_WALK_FORWARD_CONFIG_PATH",
     "DEFAULT_XGBOOST_TRAIN_BACKTEST_GRID_SEARCH_CONFIG_PATH",
     "GroupReturnAnalyzer",
     "ICValidator",
@@ -64,6 +67,7 @@ __all__ = [
     "load_simple_backtest_grid_search_config",
     "load_simple_backtester_config",
     "load_trainer_config",
+    "load_walk_forward_config",
     "load_xgboost_train_backtest_grid_search_config",
     "resolve_path",
 ]

@@ -1,0 +1,48 @@
+{
+  "prediction_path": "${PROJECT_ROOT}/output/walk_forward_quantile/all_predictions.parquet",
+  "price_path": "${PROJECT_ROOT}/data/cross_sectional_processd_data/wide_table_daily_bars",
+  "benchmark_path": "/opt/tiger/qyd/qlib_data_cn/features",
+  "industry_data_path": "${PROJECT_ROOT}/data/processd_data/industry",
+  "output_dir": "${PROJECT_ROOT}/output/walk_forward_quantile/backtest_full_constraints",
+  "start_time": "2005-01-01",
+  "end_time": "2025-12-31",
+  "account": 1000000.0,
+  "benchmark": "000300.SH",
+  "benchmark_lookback_days": 31,
+  "freq": "5d",
+  "signal_delay": 1,
+  "price_adjustment": "qfq",
+  "strategy": {
+    "class": "TopkDropoutStrategy",
+    "topk": 50,
+    "n_drop": 5,
+    "method_sell": "bottom",
+    "method_buy": "top",
+    "forbid_all_trade_at_limit": false,
+    "filter_st": true,
+    "filter_suspend": true,
+    "filter_new_stock_days": 60,
+    "min_avg_amount_20d": 5000,
+    "max_buy_pct_of_avg_amount": 0.05,
+    "max_single_weight": 0.03,
+    "max_industry_count": 10,
+    "max_industry_weight": 0.20
+  },
+  "exchange_kwargs": {
+    "freq": "day",
+    "deal_price": "open",
+    "open_cost": 0.0005,
+    "close_cost": 0.0015,
+    "min_cost": 5.0,
+    "slippage": 0.0010,
+    "limit_threshold": 0.095,
+    "lot_size": 100,
+    "forbid_buy_limit_up": true,
+    "forbid_buy_limit_down": true,
+    "forbid_sell_limit_down": true
+  },
+  "columns": {
+    "score": "pred"
+  },
+  "save_positions": true
+}

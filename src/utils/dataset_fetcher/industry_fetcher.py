@@ -34,6 +34,122 @@ DEFAULT_RAW_DATA_DIR = Path("/opt/tiger/qyd/qlib_quant_scripts/my_qlib_lab/data/
 DEFAULT_HTTP_URL = os.environ.get("DEFAULT_HTTP_URL") or os.environ.get("TUSHARE_HTTP_URL") or "http://jiaoch.site"
 PROGRESS_FILE_NAME = "industry_fetch_progress.json"
 
+# THS 行业（stock_basic.industry）→ 申万 SW2021 L1 映射表。
+# 用于补充申万指数未覆盖的股票（如北交所、部分新股）。
+# 映射规则：对同时有 THS 行业和 SW L1 的股票，取该 THS 行业下占比最高的 SW L1。
+THS_TO_SW_L1_MAP: dict[str, str] = {
+    "IT设备": "计算机",
+    "专用机械": "机械设备",
+    "中成药": "医药生物",
+    "乳制品": "食品饮料",
+    "互联网": "传媒",
+    "仓储物流": "交通运输",
+    "供气供热": "公用事业",
+    "保险": "非银金融",
+    "元器件": "电子",
+    "全国地产": "房地产",
+    "公共交通": "交通运输",
+    "公路": "交通运输",
+    "其他商业": "商贸零售",
+    "其他建材": "建筑材料",
+    "农业综合": "农林牧渔",
+    "农用机械": "机械设备",
+    "农药化肥": "基础化工",
+    "出版业": "传媒",
+    "化学制药": "医药生物",
+    "化工原料": "基础化工",
+    "化工机械": "机械设备",
+    "化纤": "基础化工",
+    "区域地产": "房地产",
+    "医疗保健": "医药生物",
+    "医药商业": "医药生物",
+    "半导体": "电子",
+    "商品城": "商贸零售",
+    "商贸代理": "商贸零售",
+    "啤酒": "食品饮料",
+    "园区开发": "房地产",
+    "塑料": "基础化工",
+    "多元金融": "非银金融",
+    "家居用品": "轻工制造",
+    "家用电器": "家用电器",
+    "小金属": "有色金属",
+    "工程机械": "机械设备",
+    "广告包装": "轻工制造",
+    "建筑工程": "建筑装饰",
+    "影视音像": "传媒",
+    "房产服务": "房地产",
+    "批发业": "基础化工",
+    "摩托车": "汽车",
+    "文教休闲": "社会服务",
+    "新型电力": "公用事业",
+    "旅游景点": "社会服务",
+    "旅游服务": "社会服务",
+    "日用化工": "美容护理",
+    "普钢": "钢铁",
+    "服饰": "纺织服饰",
+    "机场": "交通运输",
+    "机床制造": "机械设备",
+    "机械基件": "机械设备",
+    "林业": "农林牧渔",
+    "染料涂料": "基础化工",
+    "橡胶": "基础化工",
+    "水力发电": "公用事业",
+    "水务": "环保",
+    "水泥": "建筑材料",
+    "水运": "交通运输",
+    "汽车整车": "汽车",
+    "汽车服务": "汽车",
+    "汽车配件": "汽车",
+    "渔业": "农林牧渔",
+    "港口": "交通运输",
+    "火力发电": "公用事业",
+    "焦炭加工": "煤炭",
+    "煤炭开采": "煤炭",
+    "特种钢": "钢铁",
+    "环境保护": "环保",
+    "玻璃": "建筑材料",
+    "生物制药": "医药生物",
+    "电信运营": "通信",
+    "电器仪表": "机械设备",
+    "电器连锁": "商贸零售",
+    "电气设备": "电力设备",
+    "白酒": "食品饮料",
+    "百货": "商贸零售",
+    "石油加工": "石油石化",
+    "石油开采": "石油石化",
+    "石油贸易": "石油石化",
+    "矿物制品": "有色金属",
+    "种植业": "农林牧渔",
+    "空运": "交通运输",
+    "红黄酒": "食品饮料",
+    "纺织": "纺织服饰",
+    "纺织机械": "机械设备",
+    "综合类": "综合",
+    "航空": "国防军工",
+    "船舶": "国防军工",
+    "装修装饰": "建筑装饰",
+    "证券": "非银金融",
+    "超市连锁": "商贸零售",
+    "路桥": "交通运输",
+    "软件服务": "计算机",
+    "软饮料": "食品饮料",
+    "轻工机械": "机械设备",
+    "运输设备": "机械设备",
+    "通信设备": "通信",
+    "造纸": "轻工制造",
+    "酒店餐饮": "社会服务",
+    "钢加工": "机械设备",
+    "铁路": "交通运输",
+    "铅锌": "有色金属",
+    "铜": "有色金属",
+    "铝": "有色金属",
+    "银行": "银行",
+    "陶瓷": "轻工制造",
+    "食品": "食品饮料",
+    "饲料": "农林牧渔",
+    "黄金": "有色金属",
+}
+
 
 @dataclass(frozen=True)
 class IndustryFetchSummary:
@@ -95,6 +211,7 @@ class IndustryFetcher:
         max_retries: int = 3,
         force_fetch: bool = False,
         filter_ashares: bool = False,
+        fill_missing_via_stock_basic: bool = True,
     ) -> IndustryFetchSummary:
         """Fetch daily industry classification between ``start_date`` and ``end_date``.
 
@@ -103,6 +220,11 @@ class IndustryFetcher:
         or before the snapshot date and whose ``out_date`` is empty or after the
         snapshot date.  When ``force_fetch`` is false, dates already recorded in
         the progress file and already present on disk are skipped.
+
+        When ``fill_missing_via_stock_basic`` is true (default), stocks not
+        covered by the primary index-based source (e.g. SW2021 index_member does not cover
+        BSE) are supplemented via ``stock_basic.industry`` (THS industry)
+        mapped to the target level.
         """
 
         end_date = end_date or datetime.now().strftime("%Y%m%d")
@@ -163,6 +285,16 @@ class IndustryFetcher:
             industry_members = industry_members[industry_members["ts_code"].astype(str).isin(ts_codes_set)].copy()
             self.logger.info("按全量 A 股列表过滤后，行业成分记录数：%d", len(industry_members))
 
+        if fill_missing_via_stock_basic and level == "L1":
+            industry_members = self._fill_missing_via_stock_basic(
+                industry_members=industry_members,
+                src=src,
+                level=level,
+                sleep_time=sleep_time,
+                retry_wait_seconds=retry_wait_seconds,
+                max_retries=max_retries,
+            )
+
         rows_written = 0
         fetched_dates: list[str] = []
         failed_dates: list[str] = []
@@ -212,7 +344,57 @@ class IndustryFetcher:
         retry_wait_seconds: float = 2.0,
         max_retries: int = 3,
     ) -> pd.DataFrame:
-        """Fetch industry metadata and member intervals from Tushare."""
+        """Fetch industry metadata and member intervals from Tushare.
+
+        Uses ``index_classify`` + ``index_member`` per-industry fetch as the
+        primary path, which gives full coverage (all SW2021 industries).
+        Falls back to ``index_member_all`` if per-industry fetch fails.
+        """
+
+        industry_meta = self._fetch_industry_classify(
+            level=level,
+            src=src,
+            retry_wait_seconds=retry_wait_seconds,
+            max_retries=max_retries,
+        )
+        if not industry_meta.empty:
+            self.logger.info("通过 index_classify 获取到行业数量：%d (src=%s, level=%s)", len(industry_meta), src, level)
+
+            frames: list[pd.DataFrame] = []
+            empty_count = 0
+            failed_count = 0
+            index_codes = industry_meta["index_code"].dropna().astype(str).unique()
+            for index_code in index_codes:
+                member_df = self._fetch_one_industry_member(
+                    index_code=index_code,
+                    sleep_time=sleep_time,
+                    retry_wait_seconds=retry_wait_seconds,
+                    max_retries=max_retries,
+                )
+                if member_df is not None and not member_df.empty:
+                    frames.append(member_df)
+                elif member_df is None:
+                    failed_count += 1
+                else:
+                    empty_count += 1
+
+            if frames:
+                self.logger.info(
+                    "通过 index_member 获取到非空行业数量：%d，空行业：%d，失败：%d",
+                    len(frames),
+                    empty_count,
+                    failed_count,
+                )
+                members = pd.concat(frames, ignore_index=True)
+                members = members.merge(
+                    industry_meta,
+                    on="index_code",
+                    how="left",
+                    suffixes=("", "_classify"),
+                )
+                return self._normalize_industry_members(members, src=src, level=level)
+
+        self.logger.warning("index_classify + index_member 路径未返回数据，回退到 index_member_all。")
 
         member_all = self._fetch_index_member_all(
             level=level,
@@ -224,55 +406,7 @@ class IndustryFetcher:
             self.logger.info("通过 index_member_all 获取到行业成分记录数：%d", len(member_all))
             return member_all
 
-        self.logger.warning("index_member_all 未返回行业成分，回退到 index_classify + index_member 逐行业拉取。")
-
-        industry_meta = self._fetch_industry_classify(
-            level=level,
-            src=src,
-            retry_wait_seconds=retry_wait_seconds,
-            max_retries=max_retries,
-        )
-        if industry_meta.empty:
-            return pd.DataFrame()
-        self.logger.info("通过 index_classify 获取到行业数量：%d", len(industry_meta))
-
-        frames: list[pd.DataFrame] = []
-        empty_count = 0
-        index_codes = industry_meta["index_code"].dropna().astype(str).unique()
-        for index_code in index_codes:
-            member_df = self._fetch_one_industry_member(
-                index_code=index_code,
-                sleep_time=sleep_time,
-                retry_wait_seconds=retry_wait_seconds,
-                max_retries=max_retries,
-            )
-            if member_df is not None and not member_df.empty:
-                frames.append(member_df)
-            else:
-                empty_count += 1
-
-        if not frames:
-            self.logger.warning(
-                "index_classify 返回 %d 个行业，但 index_member 全部为空；样例行业代码：%s",
-                len(index_codes),
-                list(index_codes[:10]),
-            )
-            return pd.DataFrame()
-
-        self.logger.info(
-            "通过 index_member 获取到非空行业数量：%d，空行业数量：%d",
-            len(frames),
-            empty_count,
-        )
-
-        members = pd.concat(frames, ignore_index=True)
-        members = members.merge(
-            industry_meta,
-            on="index_code",
-            how="left",
-            suffixes=("", "_classify"),
-        )
-        return self._normalize_industry_members(members, src=src, level=level)
+        return pd.DataFrame()
 
     def _fetch_index_member_all(
         self,
@@ -356,6 +490,111 @@ class IndustryFetcher:
         ordered_cols.extend(col for col in normalized.columns if col not in ordered_cols)
         return normalized[ordered_cols]
 
+    def _fill_missing_via_stock_basic(
+        self,
+        industry_members: pd.DataFrame,
+        src: str,
+        level: str,
+        sleep_time: float,
+        retry_wait_seconds: float,
+        max_retries: int,
+    ) -> pd.DataFrame:
+        """Supplement industry data for stocks missing from index_member.
+
+        Uses ``stock_basic.industry`` (THS industry classification) mapped to
+        SW L1 via :data:`THS_TO_SW_L1_MAP`.  Covers two gap scenarios:
+
+        1. **Pre-SW-entry gap**: Newly listed stocks that have not yet been
+           added to SW indices (e.g. IPO in late Dec, SW entry in early Jan).
+        2. **Post-SW-exit gap**: Stocks that have been removed from SW indices
+           (e.g. out_date=20251231 means no longer in SW on 20251231) but are
+           still listed and tradable.
+
+        For each stock not already covered by SW on every date, a THS-mapped
+        record is added with ``in_date = list_date`` and ``out_date = ""``
+        (active indefinitely).  In ``build_daily_snapshot``, when both a SW
+        record and a THS_MAPPED record exist for the same stock on the same
+        date, the SW record takes priority (via the sort order).
+        """
+
+        if industry_members.empty:
+            return industry_members
+
+        existing_codes = set(industry_members["ts_code"].astype(str).unique())
+        self.logger.info("stock_basic 补充前：已有 %d 只股票的行业数据", len(existing_codes))
+
+        frames: list[pd.DataFrame] = []
+        for list_status in ("L", "D", "P"):
+            for retry_idx in range(1, max_retries + 1):
+                try:
+                    df = self.pro.stock_basic(
+                        list_status=list_status,
+                        fields="ts_code,name,industry,list_date,market",
+                    )
+                    if df is not None and not df.empty:
+                        frames.append(df)
+                    break
+                except Exception as exc:
+                    self.logger.warning(
+                        "获取 stock_basic list_status=%s 失败（第 %d/%d 次）：%s",
+                        list_status, retry_idx, max_retries, exc,
+                    )
+                    if retry_idx < max_retries:
+                        time.sleep(retry_wait_seconds * retry_idx)
+            time.sleep(sleep_time)
+
+        if not frames:
+            self.logger.warning("stock_basic 未返回数据，跳过补充。")
+            return industry_members
+
+        all_stocks = pd.concat(frames, ignore_index=True)
+        all_stocks["ts_code"] = all_stocks["ts_code"].astype(str)
+        all_stocks = all_stocks.drop_duplicates(subset=["ts_code"], keep="first")
+
+        # Only supplement stocks that have a THS industry
+        stocks_with_industry = all_stocks[all_stocks["industry"].notna()].copy()
+
+        if stocks_with_industry.empty:
+            self.logger.info("stock_basic 补充：无有行业信息的股票。")
+            return industry_members
+
+        stocks_with_industry["sw_l1"] = stocks_with_industry["industry"].map(THS_TO_SW_L1_MAP)
+        unmapped = stocks_with_industry[stocks_with_industry["sw_l1"].isna()]
+        if not unmapped.empty:
+            self.logger.warning(
+                "stock_basic 补充：%d 只股票的 THS 行业无法映射到 SW L1，已跳过。未映射行业：%s",
+                len(unmapped),
+                sorted(unmapped["industry"].unique().tolist()),
+            )
+            stocks_with_industry = stocks_with_industry[stocks_with_industry["sw_l1"].notna()].copy()
+
+        if stocks_with_industry.empty:
+            self.logger.info("stock_basic 补充：无可映射股票。")
+            return industry_members
+
+        supplement = pd.DataFrame({
+            "ts_code": stocks_with_industry["ts_code"].values,
+            "name": stocks_with_industry["name"].values,
+            "industry_code": "THS_MAPPED",
+            "industry": stocks_with_industry["sw_l1"].values,
+            "level": level,
+            "src": src,
+            "in_date": stocks_with_industry["list_date"].fillna("00000000").astype(str).str.replace("-", "", regex=False).values,
+            "out_date": "",
+            "is_new": "N",
+            "industry_code_raw": stocks_with_industry["industry"].values,
+            "is_pub": "1",
+            "parent_code": "",
+        })
+
+        result = pd.concat([industry_members, supplement], ignore_index=True)
+        self.logger.info(
+            "stock_basic 补充完成：新增 %d 只股票的 THS→SW L1 映射行业数据，总计 %d 只",
+            len(supplement),
+            result["ts_code"].nunique(),
+        )
+        return result
+
     def build_daily_snapshot(self, industry_members: pd.DataFrame, trade_date: str) -> pd.DataFrame:
         """Build one daily stock-to-industry snapshot from member intervals."""
 
@@ -371,11 +610,19 @@ class IndustryFetcher:
         snapshot = snapshot[active_mask].copy()
         snapshot.insert(0, "trade_date", trade_date)
 
+        # SW 行业记录优先于 THS 映射记录。当同一股票同一天同时存在 SW 和 THS_MAPPED 时，
+        # 保留 SW 记录（industry_code 为真实指数代码，排在 THS_MAPPED 前面）。
         if "is_new" in snapshot.columns:
-            snapshot = snapshot.sort_values(["ts_code", "is_new", "in_date"], ascending=[True, False, False])
+            snapshot = snapshot.sort_values(
+                ["ts_code", "is_new", "in_date", "industry_code"],
+                ascending=[True, False, False, True],
+            )
         else:
-            snapshot = snapshot.sort_values(["ts_code", "in_date"], ascending=[True, False])
-        snapshot = snapshot.drop_duplicates(subset=["trade_date", "ts_code", "industry_code"], keep="first")
+            snapshot = snapshot.sort_values(
+                ["ts_code", "in_date", "industry_code"],
+                ascending=[True, False, True],
+            )
+        snapshot = snapshot.drop_duplicates(subset=["trade_date", "ts_code"], keep="first")
         return snapshot.reset_index(drop=True)
 
     def get_trade_dates(self, start_date: str, end_date: str, retry_wait_seconds: float = 2.0) -> list[str]:
@@ -635,7 +882,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--http_url", type=str, default=DEFAULT_HTTP_URL, help="可选 Tushare 兼容代理地址")
     parser.add_argument("--level", type=str, default="L1", choices=["L1", "L2", "L3"], help="行业级别；默认申万一级 L1")
-    parser.add_argument("--src", type=str, default="SW", help="行业分类来源；默认 SW（申万）")
+    parser.add_argument("--src", type=str, default="SW2021", help="行业分类来源；默认 SW2021（申万2021版）")
     parser.add_argument("--sleep_time", type=float, default=0.2, help="每次成功请求后的等待秒数")
     parser.add_argument(
         "--retry_wait_seconds",
@@ -649,6 +896,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--filter_ashares",
         action="store_true",
         help="额外按全量 A 股股票列表过滤 index_member 返回结果；默认不启用",
+    )
+    parser.add_argument(
+        "--no_fill_missing",
+        action="store_true",
+        help="禁用 stock_basic THS 行业补充；默认启用，用于覆盖申万指数未覆盖的股票（如北交所）",
     )
     parser.add_argument("--log_level", type=str, default=os.environ.get("LOG_LEVEL", "INFO"), help="日志级别")
     return parser.parse_args(argv)
@@ -673,6 +925,7 @@ def main(argv: list[str] | None = None) -> int:
         max_retries=args.max_retries,
         force_fetch=args.force_fetch,
         filter_ashares=args.filter_ashares,
+        fill_missing_via_stock_basic=not args.no_fill_missing,
     )
     return 1 if summary.failed_trade_dates else 0
 
