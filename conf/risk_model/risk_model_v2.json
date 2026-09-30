@@ -1,0 +1,69 @@
+{
+  "version": "risk_model_v2",
+  "style_factors": [
+    "size",
+    "beta",
+    "momentum",
+    "value",
+    "growth",
+    "volatility",
+    "liquidity",
+    "leverage"
+  ],
+  "industry_factor": {
+    "enabled": true,
+    "classification": "sw_l1",
+    "drop_benchmark_industry": true,
+    "benchmark_industry": "银行"
+  },
+  "cross_sectional": {
+    "winsorize": true,
+    "winsorize_quantile": 0.01,
+    "zscore": true
+  },
+  "data": {
+    "wide_table_dir": "${PROJECT_ROOT}/data/processd_data/wide_table_daily_bars",
+    "daily_bars_dir": "${PROJECT_ROOT}/data/cleaned_data/daily_bars",
+    "fundamentals_file": "${PROJECT_ROOT}/data/cleaned_data/fundamentals/fundamentals.parquet",
+    "industry_file": "${PROJECT_ROOT}/data/cleaned_data/industry/industry.parquet",
+    "industry_onehot_file": "${PROJECT_ROOT}/data/processd_data/industry/industry_onehot.parquet",
+    "features_dir": "${PROJECT_ROOT}/data/features_data",
+    "cross_sectional_dir": "${PROJECT_ROOT}/data/cross_sectional_processd_data"
+  },
+  "factor_return": {
+    "method": "wls",
+    "weight": "sqrt_amount_20",
+    "min_stocks": 100,
+    "amount_cap_multiple": 10.0
+  },
+  "factor_covariance": {
+    "method": "ledoit_wolf",
+    "lookback": 252,
+    "min_observations": 60
+  },
+  "specific_risk": {
+    "lookback": 252,
+    "min_observations": 120,
+    "method": "rolling_std",
+    "shrinkage_target": "industry_size_median"
+  },
+  "beta": {
+    "lookback": 252,
+    "min_observations": 120,
+    "benchmark": "market_equal_weight"
+  },
+  "size": {
+    "proxy": "amount_20d_median",
+    "log_transform": true
+  },
+  "output": {
+    "base_dir": "${PROJECT_ROOT}/outputs/risk_model/v2",
+    "exposure": "exposures",
+    "factor_return": "factor_returns",
+    "factor_covariance": "factor_covariance",
+    "specific_risk": "specific_risk",
+    "covariance": "covariance",
+    "diagnostics": "diagnostics",
+    "reports": "reports"
+  }
+}
