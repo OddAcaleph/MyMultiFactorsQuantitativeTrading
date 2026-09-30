@@ -17,9 +17,18 @@ logger = logging.getLogger(__name__)
 class RiskInterface:
     """Load risk model outputs and provide portfolio risk utilities.
 
-    Data is loaded from the risk model output directory structure::
+    Supports two directory layouts (auto-detected):
+
+    **Year-partitioned** (v1)::
 
         outputs/risk_model/v1/year=YYYY/
+            exposures/exposures.parquet
+            specific_risk/specific_risk.parquet
+            factor_covariance/YYYYMMDD.npy
+
+    **Flat** (v2)::
+
+        outputs/risk_model/v2/
             exposures/exposures.parquet
             specific_risk/specific_risk.parquet
             factor_covariance/YYYYMMDD.npy
@@ -27,12 +36,16 @@ class RiskInterface:
 
     def __init__(self, config: Mapping[str, Any]) -> None:
         self.output_dir = Path(config["output_dir"]).expanduser().resolve()
+        self._flat_layout = not (self.output_dir / "year=2020").exists()
         self._exposure_cache: Dict[int, pd.DataFrame] = {}
         self._specific_cache: Dict[int, pd.DataFrame] = {}
         self._factor_cov_cache: Dict[int, np.ndarray] = {}
         self._factor_names_cache: Dict[int, List[str]] = {}
         self._style_idx_cache: Dict[int, List[int]] = {}
         self._industry_idx_cache: Dict[int, List[int]] = {}
+        self._global_exposures: pd.DataFrame | None = None
+        self._global_specific_risk: pd.DataFrame | None = None
+        self._global_factor_names: List[str] | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -162,22 +175,49 @@ class RiskInterface:
 
     def _load_exposures(self, year: int) -> pd.DataFrame:
         if year not in self._exposure_cache:
-            path = self.output_dir / f"year={year}" / "exposures" / "exposures.parquet"
-            logger.info("Loading exposures for year %d from %s", year, path)
-            self._exposure_cache[year] = pd.read_parquet(path)
+            if self._flat_layout:
+                if self._global_exposures is None:
+                    path = self.output_dir / "exposures" / "exposures.parquet"
+                    logger.info("Loading all exposures from %s", path)
+                    self._global_exposures = pd.read_parquet(path)
+                df = self._global_exposures
+                year_start = year * 10000 + 101
+                year_end = year * 10000 + 1231
+                self._exposure_cache[year] = df[
+                    (df["trade_date"] >= year_start) & (df["trade_date"] <= year_end)
+                ]
+            else:
+                path = self.output_dir / f"year={year}" / "exposures" / "exposures.parquet"
+                logger.info("Loading exposures for year %d from %s", year, path)
+                self._exposure_cache[year] = pd.read_parquet(path)
         return self._exposure_cache[year]
 
     def _load_specific_risk(self, year: int) -> pd.DataFrame:
         if year not in self._specific_cache:
-            path = self.output_dir / f"year={year}" / "specific_risk" / "specific_risk.parquet"
-            logger.info("Loading specific risk for year %d from %s", year, path)
-            self._specific_cache[year] = pd.read_parquet(path)
+            if self._flat_layout:
+                if self._global_specific_risk is None:
+                    path = self.output_dir / "specific_risk" / "specific_risk.parquet"
+                    logger.info("Loading all specific risk from %s", path)
+                    self._global_specific_risk = pd.read_parquet(path)
+                df = self._global_specific_risk
+                year_start = year * 10000 + 101
+                year_end = year * 10000 + 1231
+                self._specific_cache[year] = df[
+                    (df["trade_date"] >= year_start) & (df["trade_date"] <= year_end)
+                ]
+            else:
+                path = self.output_dir / f"year={year}" / "specific_risk" / "specific_risk.parquet"
+                logger.info("Loading specific risk for year %d from %s", year, path)
+                self._specific_cache[year] = pd.read_parquet(path)
         return self._specific_cache[year]
 
     def _load_factor_covariance(self, trade_date: int) -> np.ndarray:
         if trade_date not in self._factor_cov_cache:
-            year = trade_date // 10000
-            path = self.output_dir / f"year={year}" / "factor_covariance" / f"{trade_date}.npy"
+            if self._flat_layout:
+                path = self.output_dir / "factor_covariance" / f"{trade_date}.npy"
+            else:
+                year = trade_date // 10000
+                path = self.output_dir / f"year={year}" / "factor_covariance" / f"{trade_date}.npy"
             if not path.exists():
                 raise FileNotFoundError(f"Factor covariance not found: {path}")
             self._factor_cov_cache[trade_date] = np.load(path)
@@ -186,10 +226,18 @@ class RiskInterface:
     def _get_factor_names(self, year: int) -> List[str]:
         """Get factor names for a given year (from factor_names.npy)."""
         if year not in self._factor_names_cache:
-            path = self.output_dir / f"year={year}" / "factor_covariance" / "factor_names.npy"
-            if not path.exists():
-                raise FileNotFoundError(f"factor_names.npy not found for year {year}: {path}")
-            self._factor_names_cache[year] = np.load(path).tolist()
+            if self._flat_layout:
+                if self._global_factor_names is None:
+                    path = self.output_dir / "factor_covariance" / "factor_names.npy"
+                    if not path.exists():
+                        raise FileNotFoundError(f"factor_names.npy not found: {path}")
+                    self._global_factor_names = np.load(path).tolist()
+                self._factor_names_cache[year] = self._global_factor_names
+            else:
+                path = self.output_dir / f"year={year}" / "factor_covariance" / "factor_names.npy"
+                if not path.exists():
+                    raise FileNotFoundError(f"factor_names.npy not found for year {year}: {path}")
+                self._factor_names_cache[year] = np.load(path).tolist()
         return self._factor_names_cache[year]
 
     def _get_factor_indices(self, year: int) -> tuple[List[int], List[int]]:

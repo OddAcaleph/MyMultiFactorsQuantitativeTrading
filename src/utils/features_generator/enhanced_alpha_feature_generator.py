@@ -306,11 +306,13 @@ class EnhancedAlphaFactorGenerator:
         self.input_dir = Path(input_dir or self.DEFAULT_INPUT_DIR)
         self.moneyflow_file = Path(moneyflow_file or self.DEFAULT_MONEYFLOW_FILE)
         self.fundamentals_file = Path(fundamentals_file or self.DEFAULT_FUNDAMENTALS_FILE)
-        self.industry_file = Path(industry_file or self.DEFAULT_INDUSTRY_FILE)
+        self.industry_path = Path(industry_file or self.DEFAULT_INDUSTRY_FILE)
         self.output_dir = Path(output_dir or self.DEFAULT_OUTPUT_DIR)
         self.start_date = self._parse_optional_date(start_date, "start_date")
         self.end_date = self._parse_optional_date(end_date, "end_date")
         self.logger = logger or logging.getLogger(self.__class__.__name__)
+
+        self._industry_is_daily = self.industry_path.is_dir() if self.industry_path.exists() else False
 
         self._validate_inputs()
 
@@ -321,6 +323,8 @@ class EnhancedAlphaFactorGenerator:
             self.logger.warning("Moneyflow file not found: %s — moneyflow factors will be skipped.", self.moneyflow_file)
         if not self.fundamentals_file.exists():
             self.logger.warning("Fundamentals file not found: %s — fundamental momentum factors will be skipped.", self.fundamentals_file)
+        if not self.industry_path.exists():
+            self.logger.warning("Industry data not found: %s — industry-relative factors will be skipped.", self.industry_path)
         if self.start_date is not None and self.end_date is not None and self.start_date > self.end_date:
             raise ValueError(f"start_date must be <= end_date, got {self.start_date} > {self.end_date}")
 
@@ -366,9 +370,9 @@ class EnhancedAlphaFactorGenerator:
             fund_df_full = self._load_fundamentals()
             self.logger.info("fundamentals 加载完成：rows=%d", len(fund_df_full))
 
-        if self.industry_file.exists():
-            self.logger.info("预加载 industry 数据...")
-            ind_df_full = self._load_industry()
+        if self.industry_path.exists() and not self._industry_is_daily:
+            self.logger.info("预加载 industry 数据（静态）...")
+            ind_df_full = self._load_industry_static()
             self.logger.info("industry 加载完成：rows=%d", len(ind_df_full))
 
         # Split output files by year for batch processing
@@ -443,7 +447,16 @@ class EnhancedAlphaFactorGenerator:
                     factor_df[col] = np.nan
 
             # Industry-relative factors
-            if ind_df_full is not None:
+            if self._industry_is_daily:
+                batch_ind = self._load_daily_industry_for_dates(factor_df["trade_date"].unique())
+                if not batch_ind.empty:
+                    factor_df = self._generate_industry_relative_factors(factor_df, batch_ind)
+                    factor_df = self._generate_industry_depth_factors(factor_df, batch_ind, fund_df_full)
+                else:
+                    for col in [*self.INDUSTRY_RELATIVE_FACTORS, *self.INDUSTRY_DEPTH_FACTORS]:
+                        factor_df[col] = np.nan
+                del batch_ind
+            elif ind_df_full is not None:
                 batch_ind = ind_df_full[ind_df_full["trade_date"].isin(factor_df["trade_date"].unique())].copy()
                 factor_df = self._generate_industry_relative_factors(factor_df, batch_ind)
                 factor_df = self._generate_industry_depth_factors(factor_df, batch_ind, fund_df_full)
@@ -2112,12 +2125,58 @@ class EnhancedAlphaFactorGenerator:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
         return df
 
-    def _load_industry(self) -> pd.DataFrame:
-        df = pd.read_parquet(self.industry_file, columns=["trade_date", "ts_code", "l1_name"])
-        df["trade_date"] = self._normalize_yyyymmdd(df["trade_date"], "trade_date", self.industry_file)
+    def _load_industry_static(self) -> pd.DataFrame:
+        df = pd.read_parquet(self.industry_path, columns=["trade_date", "ts_code", "l1_name"])
+        df["trade_date"] = self._normalize_yyyymmdd(df["trade_date"], "trade_date", self.industry_path)
         df["ts_code"] = df["ts_code"].astype("string").str.strip()
         df["l1_name"] = df["l1_name"].astype("string").str.strip()
         return df
+
+    def _load_daily_industry_for_dates(self, trade_dates: Iterable[int]) -> pd.DataFrame:
+        frames = []
+        for td in trade_dates:
+            td_int = int(td)
+            trade_date_text = f"{td_int:08d}"
+            year = trade_date_text[:4]
+            month = trade_date_text[4:6]
+            file_name = f"{trade_date_text}.parquet"
+
+            candidate_paths = [
+                self.industry_path / f"year={year}" / f"month={month}" / file_name,
+                self.industry_path / f"month={month}" / file_name,
+                self.industry_path / file_name,
+            ]
+
+            industry_file = None
+            for p in candidate_paths:
+                if p.exists():
+                    industry_file = p
+                    break
+
+            if industry_file is None:
+                continue
+
+            df = pd.read_parquet(industry_file)
+            l1_cols = [c for c in df.columns if c.startswith("L1_")]
+            if not l1_cols:
+                continue
+
+            df["trade_date"] = td_int
+            df["ts_code"] = df["ts_code"].astype("string").str.strip()
+            l1_names = [c.removeprefix("L1_") for c in l1_cols]
+            l1_array = np.array(l1_names, dtype=object)
+            l1_values = df[l1_cols].to_numpy(dtype=bool)
+            has_industry = l1_values.any(axis=1)
+            l1_name_series = pd.Series(pd.NA, index=df.index, dtype="string")
+            if has_industry.any():
+                idx = l1_values.argmax(axis=1)
+                l1_name_series[has_industry] = pd.array(l1_array[idx[has_industry]], dtype="string")
+            df["l1_name"] = l1_name_series
+            frames.append(df[["trade_date", "ts_code", "l1_name"]])
+
+        if not frames:
+            return pd.DataFrame(columns=["trade_date", "ts_code", "l1_name"])
+        return pd.concat(frames, ignore_index=True)
 
     def _list_all_daily_bar_files(self) -> list[Path]:
         files = sorted(self.input_dir.glob("year=*/month=*/*.parquet"))

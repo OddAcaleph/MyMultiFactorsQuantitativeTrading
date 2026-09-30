@@ -107,6 +107,11 @@ class XGBoostTrainer:
         self.model: XGBRegressor | None = None
         self.device_used: str | None = None
 
+        # Evaluation framework config
+        eval_config = trainer_config.get("evaluation", {})
+        self.evaluation_enabled = bool(eval_config.get("enabled", False))
+        self.evaluation_config = dict(eval_config)
+
     def _resolve_label_cols(self, label_cols: Sequence[str] | None, label_name: str | None) -> list[str]:
         if label_cols is not None:
             return list(label_cols)
@@ -338,9 +343,132 @@ class XGBoostTrainer:
         model = self.fit(verbose=verbose)
         pred_df = self.predict("test")
         metrics = self.evaluate(pred_df)
+
+        result = {"model": model, "pred": pred_df, "metrics": metrics}
+
+        # Run full evaluation report if enabled
+        if self.evaluation_enabled:
+            try:
+                eval_result = self.run_full_evaluation(pred_df)
+                result["evaluation"] = eval_result
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Full evaluation report failed: {e}")
+                result["evaluation"] = {"error": str(e)}
+
         if save:
             self.save_outputs(model=model, pred_df=pred_df, metrics=metrics)
-        return {"model": model, "pred": pred_df, "metrics": metrics}
+        return result
+
+    def run_full_evaluation(self, pred_df: pd.DataFrame) -> dict[str, Any]:
+        """Run the full evaluation report on test-set predictions.
+
+        Loads additional label columns (5d/10d/20d returns) as needed,
+        builds the evaluation pred_label dataframe, and invokes
+        :class:`evaluation.EvaluationReport`.
+        """
+        import gc
+
+        # Free training data memory before evaluation to avoid OOM
+        self.model = None
+        self.dataset = None
+        self.handler = None
+        self.loader = None
+        gc.collect()
+
+        from evaluation import EvaluationConfig, EvaluationReport
+
+        eval_cfg = self.evaluation_config
+        score_col = eval_cfg.get("score_col", "pred")
+
+        # Determine return horizons needed for evaluation
+        return_horizons = eval_cfg.get("return_horizons", [5, 10, 20])
+        return_cols = {f"{h}d": f"label_{h}d" for h in return_horizons}
+        return_label_cols = list(return_cols.values())
+
+        # Build the full pred_label dataframe with all required return columns
+        eval_pred_label = self._build_eval_pred_label(pred_df, return_label_cols)
+
+        # Primary label for IC = training label
+        # Return label for hit-rate / upside / downside = raw return (first horizon)
+        primary_label = self.label_name
+        return_label = return_label_cols[0]
+
+        # Backtest config
+        run_backtest = bool(eval_cfg.get("run_backtest", True))
+        backtest_config_path = eval_cfg.get("backtest_config_path")
+        backtest_overrides = eval_cfg.get("backtest_overrides", {})
+
+        config = EvaluationConfig(
+            score_col=score_col,
+            primary_label_col=primary_label,
+            return_label_col=return_label,
+            return_cols=return_cols,
+            n_groups=int(eval_cfg.get("n_groups", 10)),
+            top_ks=tuple(eval_cfg.get("top_ks", [50, 100, 200])),
+            upside_realized_frac=float(eval_cfg.get("upside_realized_frac", 0.10)),
+            upside_predicted_fracs=tuple(eval_cfg.get("upside_predicted_fracs", [0.10, 0.20])),
+            downside_bottom_frac=float(eval_cfg.get("downside_bottom_frac", 0.10)),
+            downside_crash_threshold=float(eval_cfg.get("downside_crash_threshold", -0.095)),
+            run_backtest=run_backtest,
+            backtest_config_path=backtest_config_path,
+            backtest_overrides=backtest_overrides,
+        )
+
+        report = EvaluationReport(config=config)
+        result = report.generate(eval_pred_label)
+
+        # Save if output_dir is available
+        if self.output_dir is not None:
+            eval_dir = self.output_dir / "evaluation_report"
+            report.save_report(eval_dir)
+
+        return result
+
+    def _build_eval_pred_label(self, pred_df: pd.DataFrame, return_label_cols: list[str]) -> pd.DataFrame:
+        """Build evaluation dataframe with predictions + all required return labels.
+
+        Uses pyarrow.dataset for efficient partitioned reads of label data.
+        """
+        if self.labels_dir is None:
+            return pred_df.copy()
+
+        missing_labels = [c for c in return_label_cols if c not in pred_df.columns]
+        if not missing_labels:
+            return pred_df.copy()
+
+        from pathlib import Path
+        import pyarrow.dataset as ds
+
+        labels_dir = Path(self.labels_dir)
+        if not labels_dir.exists():
+            return pred_df.copy()
+
+        test_start, test_end = self.segments.get("test", (self.start_time, self.end_time))
+        test_start_int = int(pd.Timestamp(test_start).strftime("%Y%m%d"))
+        test_end_int = int(pd.Timestamp(test_end).strftime("%Y%m%d"))
+
+        try:
+            dataset = ds.dataset(str(labels_dir), format="parquet", partitioning="hive")
+            table = dataset.to_table(
+                columns=["trade_date", "ts_code", *missing_labels],
+                filter=(ds.field("trade_date") >= test_start_int)
+                       & (ds.field("trade_date") <= test_end_int),
+            )
+            label_df = table.to_pandas()
+        except Exception:
+            return pred_df.copy()
+
+        if label_df.empty:
+            return pred_df.copy()
+
+        label_df["datetime"] = pd.to_datetime(label_df["trade_date"].astype(str))
+        label_df = label_df.rename(columns={"ts_code": "instrument"})
+        label_df = label_df.set_index(["datetime", "instrument"]).drop(columns=["trade_date"])
+
+        result = pred_df.join(label_df, how="left")
+        return result
 
     def save_outputs(
         self,

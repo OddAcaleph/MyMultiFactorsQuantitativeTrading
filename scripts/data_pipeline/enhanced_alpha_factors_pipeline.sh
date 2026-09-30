@@ -130,7 +130,7 @@ if [[ "${GENERATE_ENHANCED}" == "1" ]]; then
       --input-dir "${CLEANED_DATA_DIR}/daily_bars" \
       --moneyflow-file "${CLEANED_DATA_DIR}/moneyflow/moneyflow.parquet" \
       --fundamentals-file "${CLEANED_DATA_DIR}/fundamentals/fundamentals.parquet" \
-      --industry-file "${CLEANED_DATA_DIR}/industry/industry.parquet" \
+      --industry-file "${PROCESSED_DATA_DIR}/industry/daily_onehot" \
       --output-dir "${FEATURES_DATA_DIR}/enhanced_alpha_factors" \
       "${DATE_ARGS[@]}" \
       --log-level "${LOG_LEVEL}" \
@@ -149,7 +149,7 @@ if [[ "${CROSS_SECTIONAL_ENHANCED}" == "1" ]]; then
       python3 "${CROSS_SECTIONAL_PROCESSOR_PATH}/enhanced_alpha_factors_cross_sectional_processor.py" \
         --input-dir "${FEATURES_DATA_DIR}/enhanced_alpha_factors" \
         --output-dir "${CROSS_SECTIONAL_DATA_DIR}/enhanced_alpha_factors" \
-        --industry-file "${CLEANED_DATA_DIR}/industry/industry.parquet" \
+        --industry-file "${PROCESSED_DATA_DIR}/industry/daily_onehot" \
         "${DATE_ARGS[@]}" \
         "${FAIL_FAST_ARGS[@]}" \
         --log-level "${LOG_LEVEL}" \

@@ -271,6 +271,59 @@ class ParquetLoader(DataLoader):
         "dividend_payout_approx_cc_processed",
     )
 
+    UPSIDE_ALPHA_FEATURE_COLS: tuple[str, ...] = (
+        "excess_mkt_ret_5d_cc_processed",
+        "excess_mkt_ret_10d_cc_processed",
+        "excess_mkt_ret_20d_cc_processed",
+        "excess_ind_ret_5d_cc_processed",
+        "excess_ind_ret_10d_cc_processed",
+        "excess_ind_ret_20d_cc_processed",
+        "ind_amount_rank_20d_cc_processed",
+        "ind_turnover_rank_20d_cc_processed",
+        "ret_slope_stability_20d_cc_processed",
+        "up_day_ratio_10d_cc_processed",
+        "up_day_ratio_20d_cc_processed",
+        "consecutive_up_gain_ratio_cc_processed",
+        "new_high_dist_60d_cc_processed",
+        "ma_bullish_alignment_cc_processed",
+        "breakout_pullback_ratio_20d_cc_processed",
+        "amount_expansion_ratio_cc_processed",
+        "amount_trend_5d_cc_processed",
+        "volume_price_corr_20d_cc_processed",
+        "up_down_volume_ratio_adv_cc_processed",
+        "turnover_expansion_ratio_cc_processed",
+        "obv_slope_20d_cc_processed",
+        "ind_amount_share_change_20d_cc_processed",
+        "industry_ret_rank_5d_cc_processed",
+        "industry_ret_rank_20d_cc_processed",
+        "industry_up_ratio_5d_cc_processed",
+        "industry_up_ratio_20d_cc_processed",
+        "industry_new_high_ratio_20d_cc_processed",
+        "industry_amount_expansion_20d_cc_processed",
+        "industry_leader_strength_20d_cc_processed",
+        "industry_breadth_20d_cc_processed",
+        "short_term_overheat_3d_cc_processed",
+        "short_term_overheat_5d_cc_processed",
+        "ma20_deviation_cc_processed",
+        "high_volume_stagnation_cc_processed",
+        "upper_shadow_ratio_cc_processed",
+        "pullback_from_high_5d_cc_processed",
+        "ocf_yoy_change_cc_processed",
+        "debt_ratio_change_cc_processed",
+        "inventory_turnover_change_cc_processed",
+        "receivable_turnover_change_cc_processed",
+        "forecast_type_score_cc_processed",
+        "forecast_surprise_magnitude_cc_processed",
+        "forecast_recency_30d_cc_processed",
+        "top_list_net_amount_5d_cc_processed",
+        "top_list_count_20d_cc_processed",
+        "top_list_institution_ratio_20d_cc_processed",
+        "repurchase_amount_ratio_30d_cc_processed",
+        "holder_increase_ratio_30d_cc_processed",
+        "block_trade_discount_30d_cc_processed",
+        "block_trade_amount_ratio_30d_cc_processed",
+    )
+
     DEFAULT_FEATURE_COLS: tuple[str, ...] = (
         *MAIN_FEATURE_COLS,
         *PRICE_VOLUME_FEATURE_COLS,
@@ -278,6 +331,7 @@ class ParquetLoader(DataLoader):
         *FUNDAMENTAL_FEATURE_COLS,
         *INDUSTRY_FEATURE_COLS,
         *ENHANCED_ALPHA_FEATURE_COLS,
+        *UPSIDE_ALPHA_FEATURE_COLS,
     )
 
     BASE_REQUIRED_COLS: tuple[str, ...] = (
@@ -302,6 +356,7 @@ class ParquetLoader(DataLoader):
         "fundamental": FUNDAMENTAL_FEATURE_COLS,
         "industry": INDUSTRY_FEATURE_COLS,
         "enhanced_alpha": ENHANCED_ALPHA_FEATURE_COLS,
+        "upside_alpha": UPSIDE_ALPHA_FEATURE_COLS,
     }
 
     SUPPORTED_LABEL_COLS: tuple[str, ...] = (
@@ -317,6 +372,26 @@ class ParquetLoader(DataLoader):
         "label_rank_5d",
         "label_rank_10d",
         "label_rank_20d",
+        # Advanced labels (industry-excess, classification)
+        "excess_industry_rank_5d",
+        "excess_industry_rank_10d",
+        "excess_industry_rank_20d",
+        "excess_market_rank_5d",
+        "excess_market_rank_10d",
+        "excess_market_rank_20d",
+        "up_top20_cls_5d",
+        "up_top20_cls_10d",
+        "up_top20_cls_20d",
+        "excess_industry_top20_cls_5d",
+        "excess_industry_top20_cls_10d",
+        "excess_industry_top20_cls_20d",
+    )
+
+    ADVANCED_LABEL_PREFIXES: tuple[str, ...] = (
+        "excess_industry_rank_",
+        "excess_market_rank_",
+        "up_top20_cls_",
+        "excess_industry_top20_cls_",
     )
 
     def __init__(
@@ -334,7 +409,9 @@ class ParquetLoader(DataLoader):
         fundamental_factors_dir: str | Path | None = None,
         industry_factors_dir: str | Path | None = None,
         enhanced_alpha_factors_dir: str | Path | None = None,
+        upside_alpha_factors_dir: str | Path | None = None,
         labels_dir: str | Path | None = None,
+        advanced_labels_dir: str | Path | None = None,
         config_path: str | Path | None = None,
     ) -> None:
         loader_config = load_loader_config(config_path)
@@ -363,6 +440,11 @@ class ParquetLoader(DataLoader):
         self.dropna_label = dropna_label
         self.keep_original_code = keep_original_code
         self.labels_dir = Path(labels_dir or loader_config.get("labels_dir") or self.DEFAULT_LABELS_DIR)
+        self.advanced_labels_dir = Path(
+            advanced_labels_dir
+            or loader_config.get("advanced_labels_dir")
+            or self.DATA_ROOT / "advanced_labels"
+        )
         self.factor_dirs = {
             "price_volume": Path(
                 price_volume_factors_dir
@@ -388,6 +470,11 @@ class ParquetLoader(DataLoader):
                 enhanced_alpha_factors_dir
                 or loader_config.get("enhanced_alpha_factors_dir")
                 or self.DATA_ROOT / "enhanced_alpha_factors"
+            ),
+            "upside_alpha": Path(
+                upside_alpha_factors_dir
+                or loader_config.get("upside_alpha_factors_dir")
+                or self.DATA_ROOT / "upside_alpha_factors"
             ),
         }
 
@@ -449,6 +536,27 @@ class ParquetLoader(DataLoader):
             )
         if not self.labels_dir.exists():
             raise FileNotFoundError(f"labels_dir does not exist: {self.labels_dir}")
+        # If any advanced labels are requested, advanced_labels_dir must exist
+        if self._advanced_label_cols():
+            if not self.advanced_labels_dir.exists():
+                raise FileNotFoundError(
+                    f"advanced_labels_dir does not exist: {self.advanced_labels_dir}. "
+                    f"Required for advanced labels: {self._advanced_label_cols()}"
+                )
+
+    def _basic_label_cols(self) -> list[str]:
+        """Return label columns that come from the main labels_dir."""
+        return [
+            col for col in self.label_cols
+            if not any(col.startswith(prefix) for prefix in self.ADVANCED_LABEL_PREFIXES)
+        ]
+
+    def _advanced_label_cols(self) -> list[str]:
+        """Return label columns that come from advanced_labels_dir."""
+        return [
+            col for col in self.label_cols
+            if any(col.startswith(prefix) for prefix in self.ADVANCED_LABEL_PREFIXES)
+        ]
 
     def _validate_required_dirs(self) -> None:
         for source, required_cols in self._required_factor_cols_by_source().items():
@@ -501,18 +609,36 @@ class ParquetLoader(DataLoader):
             )
 
         if self.include_label:
-            label_df = self._read_dataset(
-                self.labels_dir,
-                [*self.BASE_REQUIRED_COLS, *self.label_cols],
-                start_time=start_time,
-                end_time=end_time,
-            )
-            main_df = main_df.merge(
-                label_df,
-                on=list(self.BASE_REQUIRED_COLS),
-                how="left",
-                validate="one_to_one",
-            )
+            basic_cols = self._basic_label_cols()
+            advanced_cols = self._advanced_label_cols()
+
+            if basic_cols:
+                label_df = self._read_dataset(
+                    self.labels_dir,
+                    [*self.BASE_REQUIRED_COLS, *basic_cols],
+                    start_time=start_time,
+                    end_time=end_time,
+                )
+                main_df = main_df.merge(
+                    label_df,
+                    on=list(self.BASE_REQUIRED_COLS),
+                    how="left",
+                    validate="one_to_one",
+                )
+
+            if advanced_cols:
+                adv_label_df = self._read_dataset(
+                    self.advanced_labels_dir,
+                    [*self.BASE_REQUIRED_COLS, *advanced_cols],
+                    start_time=start_time,
+                    end_time=end_time,
+                )
+                main_df = main_df.merge(
+                    adv_label_df,
+                    on=list(self.BASE_REQUIRED_COLS),
+                    how="left",
+                    validate="one_to_one",
+                )
 
         return main_df
 

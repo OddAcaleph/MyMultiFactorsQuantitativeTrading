@@ -322,20 +322,21 @@ class EnhancedAlphaFactorsCrossSectionalProcessor:
         self.input_dir = Path(input_dir or self.DEFAULT_INPUT_DIR)
         self.output_dir = Path(output_dir or self.DEFAULT_OUTPUT_DIR)
         self.factor_columns = tuple(factor_columns) if factor_columns else self.FACTOR_COLUMNS
-        self.industry_file = Path(industry_file or self.DEFAULT_INDUSTRY_FILE)
+        self.industry_path = Path(industry_file or self.DEFAULT_INDUSTRY_FILE)
         self.industry_neutral = industry_neutral
         self.start_date = self._parse_optional_date(start_date, "start_date")
         self.end_date = self._parse_optional_date(end_date, "end_date")
         self.logger = logger or logging.getLogger(self.__class__.__name__)
         self.fail_fast = fail_fast
         self._industry_df: pd.DataFrame | None = None
+        self._industry_is_daily = self.industry_path.is_dir() if self.industry_path.exists() else False
         self._validate_inputs()
 
     def _validate_inputs(self) -> None:
         if not self.input_dir.exists() or not self.input_dir.is_dir():
             raise NotADirectoryError(f"Input directory not found: {self.input_dir}")
-        if self.industry_neutral and not self.industry_file.exists():
-            self.logger.warning("Industry file not found: %s — industry neutralization will be skipped.", self.industry_file)
+        if self.industry_neutral and not self.industry_path.exists():
+            self.logger.warning("Industry data not found: %s — industry neutralization will be skipped.", self.industry_path)
             self.industry_neutral = False
         if self.start_date is not None and self.end_date is not None and self.start_date > self.end_date:
             raise ValueError("start_date must be <= end_date")
@@ -407,14 +408,19 @@ class EnhancedAlphaFactorsCrossSectionalProcessor:
         # Load industry data once for neutralization
         ind_map = None
         if self.industry_neutral:
-            if self._industry_df is None:
-                self._load_industry_data()
-            if self._industry_df is not None:
-                # Get industry for each stock in this file
+            if self._industry_is_daily:
                 file_dates = processed[self.DATE_COLUMN].unique()
-                ind_subset = self._industry_df[self._industry_df[self.DATE_COLUMN].isin(file_dates)]
+                ind_subset = self._load_daily_industry_for_dates(file_dates)
                 if not ind_subset.empty:
                     ind_map = ind_subset[["trade_date", "ts_code", "l1_name"]]
+            else:
+                if self._industry_df is None:
+                    self._load_industry_data_static()
+                if self._industry_df is not None:
+                    file_dates = processed[self.DATE_COLUMN].unique()
+                    ind_subset = self._industry_df[self._industry_df[self.DATE_COLUMN].isin(file_dates)]
+                    if not ind_subset.empty:
+                        ind_map = ind_subset[["trade_date", "ts_code", "l1_name"]]
 
         for factor in self.factor_columns:
             if factor not in processed.columns:
@@ -443,19 +449,68 @@ class EnhancedAlphaFactorsCrossSectionalProcessor:
 
         return processed
 
-    def _load_industry_data(self) -> None:
-        """Load industry mapping data for neutralization."""
+    def _load_industry_data_static(self) -> None:
+        """Load industry mapping data for neutralization (static single file)."""
         try:
-            ind_df = pd.read_parquet(self.industry_file, columns=["trade_date", "ts_code", "l1_name"])
+            ind_df = pd.read_parquet(self.industry_path, columns=["trade_date", "ts_code", "l1_name"])
             ind_df["trade_date"] = self._normalize_yyyymmdd(ind_df["trade_date"])
             ind_df["ts_code"] = ind_df["ts_code"].astype("string").str.strip()
             ind_df["l1_name"] = ind_df["l1_name"].astype("string").str.strip()
             self._industry_df = ind_df
-            self.logger.info("行业数据加载完成：rows=%d", len(ind_df))
+            self.logger.info("行业数据加载完成（静态）：rows=%d", len(ind_df))
         except Exception as exc:
             self.logger.warning("行业数据加载失败，将跳过高业中性化：%s", exc)
             self.industry_neutral = False
             self._industry_df = None
+
+    def _load_daily_industry_for_dates(self, trade_dates: Iterable[int]) -> pd.DataFrame:
+        """Load daily industry one-hot files and convert to l1_name format."""
+        import numpy as np
+
+        frames = []
+        for td in trade_dates:
+            td_int = int(td)
+            trade_date_text = f"{td_int:08d}"
+            year = trade_date_text[:4]
+            month = trade_date_text[4:6]
+            file_name = f"{trade_date_text}.parquet"
+
+            candidate_paths = [
+                self.industry_path / f"year={year}" / f"month={month}" / file_name,
+                self.industry_path / f"month={month}" / file_name,
+                self.industry_path / file_name,
+            ]
+
+            industry_file = None
+            for p in candidate_paths:
+                if p.exists():
+                    industry_file = p
+                    break
+
+            if industry_file is None:
+                continue
+
+            df = pd.read_parquet(industry_file)
+            l1_cols = [c for c in df.columns if c.startswith("L1_")]
+            if not l1_cols:
+                continue
+
+            df["trade_date"] = td_int
+            df["ts_code"] = df["ts_code"].astype("string").str.strip()
+            l1_names = [c.removeprefix("L1_") for c in l1_cols]
+            l1_array = np.array(l1_names, dtype=object)
+            l1_values = df[l1_cols].to_numpy(dtype=bool)
+            has_industry = l1_values.any(axis=1)
+            l1_name_series = pd.Series(pd.NA, index=df.index, dtype="string")
+            if has_industry.any():
+                idx = l1_values.argmax(axis=1)
+                l1_name_series[has_industry] = pd.array(l1_array[idx[has_industry]], dtype="string")
+            df["l1_name"] = l1_name_series
+            frames.append(df[["trade_date", "ts_code", "l1_name"]])
+
+        if not frames:
+            return pd.DataFrame(columns=["trade_date", "ts_code", "l1_name"])
+        return pd.concat(frames, ignore_index=True)
 
     @staticmethod
     def _normalize_yyyymmdd(series: pd.Series) -> pd.Series:
